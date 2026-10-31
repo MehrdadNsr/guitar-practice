@@ -187,7 +187,8 @@ main {
   color: var(--ink);
 }
 .diagram .name { font-family: var(--mono); font-weight: 700; color: var(--chord); font-size: 0.95rem; }
-.diagram.match { border-color: var(--match); background: var(--match-bg); }
+.diagram.match, .diagram.hit { border-color: var(--match); background: var(--match-bg); }
+.diagram.current-chord { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .chord-svg { display: block; }
 .chord-svg .finger { fill: var(--paper); }
 .chord-svg .root-dot { fill: var(--chord); }
@@ -261,8 +262,22 @@ main {
   margin: 0 -1px;
 }
 .cd b:hover { background: color-mix(in srgb, var(--chord) 15%, transparent); }
-.cd b.match { color: var(--match); background: var(--match-bg); box-shadow: 0 0 0 2px var(--match); }
+.cd b.match, .cd b.hit { color: var(--match); background: var(--match-bg); box-shadow: 0 0 0 2px var(--match); }
 .cd b.done { color: var(--match); background: var(--match-bg); }
+.cd b.current-chord {
+  color: var(--accent-ink);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+  animation: pulse-chord 1.2s infinite ease-in-out;
+}
+.cd b.just-hit {
+  transform: scale(1.25);
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+@keyframes pulse-chord {
+  0%, 100% { box-shadow: 0 0 0 2px var(--accent); }
+  50% { box-shadow: 0 0 8px 3px var(--accent); }
+}
 .ly { display: block; white-space: pre; line-height: 1.4em; }
 /* Monospace fonts have no Persian/Arabic glyphs; RTL lyrics use the UI font
    (alignment does not depend on monospace: each chord sits on its chunk). */
@@ -360,8 +375,10 @@ kbd {
 .det-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .file-btn { display: inline-flex; align-items: center; }
 .hint { color: var(--muted); font-size: 0.76rem; margin: 6px 0 0; }
-.detector.min .det-body > :not(.det-main) { display: none; }
-.detector.min .det-chord { font-size: 1.8rem; }
+.detector.min .det-body > :not(.det-main),
+.detector.minimized .det-body > :not(.det-main) { display: none; }
+.detector.min .det-chord,
+.detector.minimized .det-chord { font-size: 1.8rem; }
 
 /* ------------------------------------------------------ chord popover */
 

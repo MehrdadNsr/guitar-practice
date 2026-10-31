@@ -292,6 +292,36 @@
     el.sheet.innerHTML = out.join('');
     state.lineEls = Array.from(el.sheet.querySelectorAll('.line'));
     state.activeIdx = -1;
+    resetChordProgress();
+  }
+
+  function resetChordProgress() {
+    state.progressIdx = 0;
+    state.playedSet.clear();
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    chordEls.forEach((b, i) => {
+      b.classList.remove('done', 'current-chord', 'just-hit', 'match', 'hit');
+      if (i === 0 && (listener.active || scroller.playing)) {
+        b.classList.add('current-chord');
+      }
+    });
+    updateStripCurrent();
+  }
+
+  function updateCurrentChordHighlight() {
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    chordEls.forEach((b, i) => {
+      b.classList.toggle('current-chord', i === state.progressIdx);
+    });
+    updateStripCurrent();
+  }
+
+  function updateStripCurrent() {
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    const expected = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+    el.strip.querySelectorAll('.diagram').forEach((d) => {
+      d.classList.toggle('current-chord', !!expected && MT.sameChord(d.dataset.c, expected));
+    });
   }
 
   // ------------------------------------------- layout + centre highlight
@@ -382,10 +412,6 @@
       if (this.playing) return;
       if (this.atEnd()) window.scrollTo(0, 0);
       this.playing = true;
-      // Auto-start chord detection when scroll begins
-      if (!listener.active) {
-        startListening("mic").catch(() => toast("میکروفون فعال نشد. اسکرول معمولی ادامه دارد."));
-      }
       this.pos = window.scrollY;
       this.lastSet = window.scrollY;
       this.last = performance.now();
@@ -394,17 +420,19 @@
       el.playBtn.querySelector('.lbl').textContent = 'توقف';
       el.playBtn.setAttribute('aria-pressed', 'true');
       el.focusLine.classList.add('show');
+      if (listener.active) {
+        updateCurrentChordHighlight();
+      }
       wakeLock.update();
     },
     stop() {
       if (!this.playing) return;
       this.playing = false;
-      if (listener.active) stopListening(false);
       cancelAnimationFrame(this.raf);
       el.playBtn.querySelector('.ico').textContent = '▶';
       el.playBtn.querySelector('.lbl').textContent = 'اسکرول';
       el.playBtn.setAttribute('aria-pressed', 'false');
-      el.focusLine.classList.remove('show');
+      if (!listener.active) el.focusLine.classList.remove('show');
       wakeLock.update();
     },
     toggle() { if (this.playing) this.stop(); else this.start(); },
@@ -420,12 +448,14 @@
       this.last = ts;
       // The reader grabbed the page: continue from where they left it.
       if (Math.abs(window.scrollY - this.lastSet) > 3) this.pos = window.scrollY;
-      // Chord-sync mode: do not auto-advance when detector is listening
-      if (listener.active || true) { // practice mode: no timer scroll
+
+      // In chord-sync practice mode (when mic is listening), movement is driven by guitar chords
+      if (listener.active) {
         this.lastSet = window.scrollY;
         this.raf = requestAnimationFrame((t) => this.step(t));
         return;
       }
+
       this.pos += (speedPx(+el.speed.value) * dt) / 1000;
       const end = this.endY();
       if (this.pos >= end) {
@@ -442,6 +472,7 @@
       window.scrollTo(0, 0);
       this.pos = 0;
       this.lastSet = window.scrollY;
+      resetChordProgress();
       updateActive(true);
     },
   };
@@ -489,6 +520,13 @@
   // ------------------------------------------------------------ metronome
 
   const metronome = new AE.Metronome();
+  metronome.onBeat = (beatIdx, isAccent) => {
+    const dots = Array.from(el.beats.children);
+    dots.forEach((dot, idx) => {
+      dot.classList.toggle('on', idx === beatIdx);
+      dot.classList.toggle('accent', idx === beatIdx && isAccent);
+    });
+  };
   const tapper = new AE.TapTempo();
 
   function renderBeatDots(n) {
@@ -628,20 +666,71 @@
     det.conf.style.width = '0%';
   }
 
+  let lastAdvanceTime = 0;
+  let lastAdvancedChord = '';
+
   /** Advance one chord at a time using actual DOM order of chords in the sheet. */
-  function advanceToDetectedChord(chordName) {
+  function advanceToDetectedChord(r) {
+    const chordName = typeof r === 'string' ? r : (r && r.chord);
     if (!chordName) return;
-    const chordEls = Array.from(document.querySelectorAll('.sheet b[data-c]'));
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
     if (!chordEls.length || state.progressIdx >= chordEls.length) return;
 
     const currentEl = chordEls[state.progressIdx];
-    if (!MT.sameChord(currentEl.dataset.c, chordName)) return; // wrong chord, wait
+    const expected = currentEl.dataset.c;
+    let matched = MT.sameChord(expected, chordName);
 
-    // Mark this one done
-    currentEl.classList.add('done');
+    // Also check runner-up candidates if available
+    if (!matched && r && r.candidates && r.candidates.length) {
+      for (let i = 0; i < Math.min(3, r.candidates.length); i++) {
+        if (r.candidates[i].score >= 0.70 && MT.sameChord(expected, r.candidates[i].name)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    // Look-ahead tolerance (skip at most 1 chord if the player moved ahead)
+    let skip = 0;
+    if (!matched && state.progressIdx + 1 < chordEls.length) {
+      const nextExpected = chordEls[state.progressIdx + 1].dataset.c;
+      if (MT.sameChord(nextExpected, chordName)) {
+        matched = true;
+        skip = 1;
+      }
+    }
+
+    if (!matched) return; // wrong chord, wait
+
+    // Anti-chatter: if re-strumming same chord name, require onset or debounce > 350ms
+    const now = performance.now();
+    const isSameChord = lastAdvancedChord && MT.sameChord(lastAdvancedChord, chordName);
+    const hasOnset = r && r.onset;
+    if (isSameChord && !hasOnset && (now - lastAdvanceTime < 350)) {
+      return;
+    }
+
+    lastAdvanceTime = now;
+    lastAdvancedChord = chordName;
+
+    // Mark current chord done
+    currentEl.classList.remove('current-chord');
+    currentEl.classList.add('done', 'just-hit');
+    setTimeout(() => currentEl.classList.remove('just-hit'), 400);
+
+    if (skip > 0) {
+      state.progressIdx += skip;
+      const skippedEl = chordEls[state.progressIdx];
+      skippedEl.classList.add('done', 'just-hit');
+      setTimeout(() => skippedEl.classList.remove('just-hit'), 400);
+    }
+
     state.progressIdx++;
 
-    // Scroll to the line of the next chord
+    // Highlight the next chord
+    updateCurrentChordHighlight();
+
+    // Scroll to the line containing the next chord
     if (state.progressIdx < chordEls.length) {
       const nextEl = chordEls[state.progressIdx];
       const line = nextEl.closest('.line');
@@ -681,10 +770,11 @@
         if (historyList.length > 10) historyList.shift();
       }
       state.detected = name;
-      if (name) advanceToDetectedChord(name);
       highlightMatches();
       renderHistory();
     }
+    // Advance chord progression on chord match
+    if (name) advanceToDetectedChord(r);
     det.chord.classList.toggle('stale', !r.active);
     det.conf.style.width = (name && r.active ? clamp(r.score, 0, 1) * 100 : 0) + '%';
     setDetStatus(STATUS_TEXT[r.status] || '', true);
@@ -719,10 +809,14 @@
   function highlightMatches() {
     const name = state.detected;
     el.sheet.querySelectorAll('b[data-c]').forEach((b) => {
-      b.classList.toggle('hit', !!name && MT.sameChord(b.dataset.c, name));
+      const isMatch = !!name && MT.sameChord(b.dataset.c, name);
+      b.classList.toggle('match', isMatch);
+      b.classList.toggle('hit', isMatch);
     });
     el.strip.querySelectorAll('.diagram').forEach((d) => {
-      d.classList.toggle('hit', !!name && MT.sameChord(d.dataset.c, name));
+      const isMatch = !!name && MT.sameChord(d.dataset.c, name);
+      d.classList.toggle('match', isMatch);
+      d.classList.toggle('hit', isMatch);
     });
   }
 
@@ -748,6 +842,17 @@
     const b = ev.target.closest('b[data-c]');
     if (!b) return;
     showPop(b.dataset.c, b);
+
+    // In chord-sync practice mode or when mic is active: jump progress to clicked chord!
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    const clickedIdx = chordEls.indexOf(b);
+    if (clickedIdx >= 0) {
+      state.progressIdx = clickedIdx;
+      chordEls.forEach((el, i) => {
+        el.classList.toggle('done', i < clickedIdx);
+      });
+      updateCurrentChordHighlight();
+    }
   });
   el.strip.addEventListener('click', (ev) => {
     const d = ev.target.closest('.diagram');
@@ -789,15 +894,14 @@
   el.micBtn.addEventListener('click', () => {
     if (listener.active) {
       stopListening(true);
-      scroller.stop();
+      if (!scroller.playing) el.focusLine.classList.remove('show');
     } else {
-      // Start practice: stop any timer scroll, start mic, reset progress
-      if (scroller.playing) scroller.stop();
-      state.progressIdx = 0;
-      state.playedSet.clear();
-      document.querySelectorAll('b.done').forEach(b => b.classList.remove('done'));
+      // Start chord-sync practice mode
+      resetChordProgress();
+      el.focusLine.classList.add('show');
       startListening('mic').then(() => {
-        toast('حالت تمرین: فقط با آکورد صحیح جلو می‌رود');
+        toast('🎸 حالت همگام با گیتار: با نواختن آکوردها، صفحه جلو می‌رود');
+        updateCurrentChordHighlight();
       });
     }
   });
@@ -809,7 +913,6 @@
   el.moreBtn.addEventListener('click', () => {
     el.toolbar.classList.toggle('expanded');
   });
-  el.addSongBtn.addEventListener('click', addSong);
 
   // Song select
   el.songSelect.addEventListener('change', () => loadSong(el.songSelect.value));
@@ -817,6 +920,7 @@
   // Detector panel controls
   det.close.addEventListener('click', () => stopListening(true));
   det.min.addEventListener('click', () => {
+    el.detector.classList.toggle('min');
     el.detector.classList.toggle('minimized');
   });
   det.songOnly.addEventListener('change', () => {
@@ -835,28 +939,122 @@
   });
   det.useMic.addEventListener('click', () => startListening('mic'));
 
-  // ------------------------------------------------------------- add song
+  // ------------------------------------------------------------- add/edit song dialog
 
-  function addSong() {
-    const title = prompt('عنوان آهنگ:');
-    if (!title) return;
-    const artist = prompt('هنرمند (اختیاری):') || '';
-    const body = prompt('\u0645تن آهنگ با آکوردها (ChordPro یا فرمت ساده):');
-    if (!body) return;
+  const songDialog = $('songDialog');
+  const songForm = $('songForm');
+  const songSave = $('songSave');
+  const songCopy = $('songCopy');
+  const songDelete = $('songDelete');
+  const songCancel = $('songCancel');
+
+  function openSongDialog(songToEdit) {
+    if (!songDialog) return;
+    songForm.reset();
+    if (songToEdit) {
+      songForm.title.value = songToEdit.title || '';
+      songForm.artist.value = songToEdit.artist || '';
+      songForm.key.value = songToEdit.key || '';
+      songForm.bpm.value = songToEdit.bpm || '';
+      songForm.timeSignature.value = songToEdit.timeSignature || '';
+      songForm.rtl.checked = songToEdit.lang === 'fa';
+      songForm.body.value = songToEdit.body || '';
+      songDelete.hidden = !songToEdit.user;
+      songDialog._editingId = songToEdit.id;
+    } else {
+      songDelete.hidden = true;
+      songDialog._editingId = null;
+    }
+    songDialog.showModal();
+  }
+
+  function saveSongFromDialog() {
+    const title = songForm.title.value.trim();
+    const body = songForm.body.value.trim();
+    if (!title || !body) {
+      toast('عنوان و متن آهنگ الزامی هستند.');
+      return;
+    }
+    const artist = songForm.artist.value.trim();
+    const key = songForm.key.value.trim();
+    const bpm = Number(songForm.bpm.value) || undefined;
+    const timeSignature = songForm.timeSignature.value.trim() || undefined;
+    const isFa = songForm.rtl.checked || /[؀-ۿ]/.test(body);
+
+    const existingIdx = songDialog._editingId ? userSongs.findIndex((s) => s.id === songDialog._editingId) : -1;
+    const id = existingIdx >= 0 ? userSongs[existingIdx].id : 'user-' + Date.now();
+
     const song = {
-      id: 'user-' + Date.now(),
+      id,
       title,
       artist,
+      key: key || undefined,
+      bpm,
+      timeSignature,
+      lang: isFa ? 'fa' : 'en',
       body,
-      lang: /[؀-ۿ]/.test(body) ? 'fa' : 'en',
       user: true,
     };
-    userSongs.push(song);
-    try { localStorage.setItem(USER_SONGS_KEY, JSON.stringify(userSongs)); } catch (e) { toast('ذخیره پر شد'); return; }
+
+    if (existingIdx >= 0) {
+      userSongs[existingIdx] = song;
+    } else {
+      userSongs.push(song);
+    }
+
+    try {
+      localStorage.setItem(USER_SONGS_KEY, JSON.stringify(userSongs));
+    } catch (e) {
+      toast('حافظه مرورگر پر است.');
+      return;
+    }
+
     populateSongSelect();
     loadSong(song.id);
-    toast('آهنگ اضافه شد');
+    songDialog.close();
+    toast('آهنگ ذخیره شد 🎉');
   }
+
+  function copySongLibraryFormat() {
+    const title = songForm.title.value.trim() || 'Untitled';
+    const body = songForm.body.value;
+    const artist = songForm.artist.value.trim();
+    const key = songForm.key.value.trim();
+    const bpm = Number(songForm.bpm.value) || 90;
+    const timeSignature = songForm.timeSignature.value.trim() || '4/4';
+    const id = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'song-' + Date.now();
+    const obj = {
+      id,
+      title,
+      artist: artist || undefined,
+      key: key || undefined,
+      bpm: bpm || undefined,
+      timeSignature: timeSignature !== '4/4' ? timeSignature : undefined,
+      body,
+    };
+    const code = '  ' + JSON.stringify(obj, null, 2).replace(/\n/g, '\n  ') + ',';
+    navigator.clipboard.writeText(code).then(() => {
+      toast('کد در کلیپ‌بورد کپی شد');
+    }).catch(() => {
+      toast('امکان کپی خودکار وجود نداشت');
+    });
+  }
+
+  function deleteCurrentSong() {
+    if (!songDialog._editingId) return;
+    userSongs = userSongs.filter((s) => s.id !== songDialog._editingId);
+    try { localStorage.setItem(USER_SONGS_KEY, JSON.stringify(userSongs)); } catch (e) {}
+    populateSongSelect();
+    loadSong(allSongs()[0]?.id);
+    songDialog.close();
+    toast('آهنگ حذف شد');
+  }
+
+  if (songSave) songSave.addEventListener('click', saveSongFromDialog);
+  if (songCopy) songCopy.addEventListener('click', copySongLibraryFormat);
+  if (songDelete) songDelete.addEventListener('click', deleteCurrentSong);
+  if (songCancel) songCancel.addEventListener('click', () => songDialog.close());
+  el.addSongBtn.addEventListener('click', () => openSongDialog(null));
 
   // ------------------------------------------------------------- init
 
@@ -878,13 +1076,33 @@
       if (ev.target.matches('input, textarea, select')) return;
       if (ev.key === ' ') { ev.preventDefault(); scroller.toggle(); }
       else if (ev.key === 'r' || ev.key === 'R') scroller.restart();
+      else if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        el.speed.value = Math.min(100, +el.speed.value + 5);
+        el.speed.dispatchEvent(new Event('input'));
+      }
+      else if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        el.speed.value = Math.max(0, +el.speed.value - 5);
+        el.speed.dispatchEvent(new Event('input'));
+      }
       else if (ev.key === '[') setTranspose(state.transpose - 1);
       else if (ev.key === ']') setTranspose(state.transpose + 1);
       else if (ev.key === '0') setTranspose(0);
       else if (ev.key === '+' || ev.key === '=') setZoom(settings.zoom + 0.1);
       else if (ev.key === '-' || ev.key === '_') setZoom(settings.zoom - 0.1);
       else if (ev.key === 'm' || ev.key === 'M') toggleMetronome();
-      else if (ev.key === 'Escape') hidePop();
+      else if (ev.key === 't' || ev.key === 'T') {
+        const bpm = tapper.tap();
+        if (bpm) setBpm(bpm);
+      }
+      else if (ev.key === 'l' || ev.key === 'L') el.micBtn.click();
+      else if (ev.key === 'd' || ev.key === 'D') toggleTheme();
+      else if (ev.key === 'f' || ev.key === 'F') el.fsBtn.click();
+      else if (ev.key === 'Escape') {
+        hidePop();
+        if (songDialog && songDialog.open) songDialog.close();
+      }
     });
     window.addEventListener('hashchange', () => {
       const id = songIdFromHash();

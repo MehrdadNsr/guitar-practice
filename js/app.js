@@ -628,34 +628,34 @@
     det.conf.style.width = '0%';
   }
 
-  /** Advance one chord at a time. Marks completed chords green and scrolls to the next expected one. */
+  /** Advance one chord at a time using actual DOM order of chords in the sheet. */
   function advanceToDetectedChord(chordName) {
-    if (!chordName || !state.chords.length) return;
-    // Find the next expected chord in the sequence
-    const expected = state.chords[state.progressIdx];
-    if (!expected || !MT.sameChord(expected, chordName)) return; // wrong chord, wait
+    if (!chordName) return;
+    const chordEls = Array.from(document.querySelectorAll('.sheet b[data-c]'));
+    if (!chordEls.length || state.progressIdx >= chordEls.length) return;
 
-    // Mark this chord as done
-    state.playedSet.add(state.progressIdx);
+    const currentEl = chordEls[state.progressIdx];
+    if (!MT.sameChord(currentEl.dataset.c, chordName)) return; // wrong chord, wait
+
+    // Mark this one done
+    currentEl.classList.add('done');
     state.progressIdx++;
 
-    // Visual: mark all completed chords green
-    document.querySelectorAll('b[data-c]').forEach((b, i) => {
-      if (state.playedSet.has(i)) b.classList.add('done');
-    });
-
-    // Scroll to the line that contains the next chord (or current if last)
-    const nextIdx = Math.min(state.progressIdx, state.lineEls.length - 1);
-    if (state.lineEls[nextIdx]) {
-      const targetY = state.lineCenters[nextIdx] - state.focusY;
-      window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
-      state.lineEls[nextIdx].classList.add("chord-hit");
-      setTimeout(() => state.lineEls[nextIdx].classList.remove("chord-hit"), 400);
-    }
-
-    if (state.progressIdx >= state.chords.length) {
+    // Scroll to the line of the next chord
+    if (state.progressIdx < chordEls.length) {
+      const nextEl = chordEls[state.progressIdx];
+      const line = nextEl.closest('.line');
+      if (line) {
+        const idx = state.lineEls.indexOf(line);
+        if (idx >= 0) {
+          const targetY = state.lineCenters[idx] - state.focusY;
+          window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
+          line.classList.add("chord-hit");
+          setTimeout(() => line.classList.remove("chord-hit"), 400);
+        }
+      }
+    } else {
       toast("آهنگ تمام شد 🎉");
-      scroller.stop();
     }
   }
 

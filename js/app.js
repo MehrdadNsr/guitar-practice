@@ -1172,5 +1172,7 @@
   }
 
   // Small debugging hook for the browser console.
-  window.GP.app = { state, scroller, metronome, tracker, listener, loadSong, setTranspose, setZoom, measure };
+  window.GP.app = { state, scroller, metronome, tracker, listener, loadSong, setTranspose, setZoom, measure, advanceChord };
+
+  init();
 })();

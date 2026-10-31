@@ -77,6 +77,7 @@
     detected: null,
     progressIdx: 0,          // next expected chord index in the full sequence
     playedSet: new Set(),    // chords already successfully played in this session
+    practiceMode: false,
   };
 
   const el = {
@@ -88,6 +89,8 @@
     micBtn: $('micBtn'), themeBtn: $('themeBtn'), fsBtn: $('fsBtn'), moreBtn: $('moreBtn'), addSongBtn: $('addSongBtn'),
     title: $('songTitle'), meta: $('songMeta'), strip: $('chordStrip'), sheet: $('sheet'), topSpacer: $('topSpacer'),
     focusLine: $('focusLine'), detector: $('detector'), pop: $('chordPop'), toast: $('toast'),
+    practiceBar: $('practiceBar'), pTargetChord: $('pTargetChord'), pNextChord: $('pNextChord'),
+    pCount: $('pCount'), pPrevBtn: $('pPrevBtn'), pNextBtn: $('pNextBtn'), pRestartBtn: $('pRestartBtn'),
   };
 
   // -------------------------------------------------------------- toast
@@ -299,28 +302,81 @@
     state.progressIdx = 0;
     state.playedSet.clear();
     const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
-    chordEls.forEach((b, i) => {
+    chordEls.forEach((b) => {
       b.classList.remove('done', 'current-chord', 'just-hit', 'match', 'hit');
-      if (i === 0 && (listener.active || scroller.playing)) {
-        b.classList.add('current-chord');
-      }
     });
-    updateStripCurrent();
+    updateCurrentChordHighlight();
   }
 
   function updateCurrentChordHighlight() {
     const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    const total = chordEls.length;
     chordEls.forEach((b, i) => {
-      b.classList.toggle('current-chord', i === state.progressIdx);
+      b.classList.toggle('done', i < state.progressIdx);
+      b.classList.toggle('current-chord', state.practiceMode && i === state.progressIdx);
     });
+
+    if (state.practiceMode && el.practiceBar) {
+      el.practiceBar.hidden = false;
+      const current = chordEls[state.progressIdx];
+      const next = chordEls[state.progressIdx + 1];
+      if (current) {
+        el.pTargetChord.textContent = current.dataset.c;
+        el.pNextChord.textContent = next ? `➔ بعدی: ${next.dataset.c}` : '➔ پایان آهنگ';
+        el.pCount.textContent = `(${state.progressIdx + 1} از ${total})`;
+      } else {
+        el.pTargetChord.textContent = '🎉';
+        el.pNextChord.textContent = 'پایان آهنگ';
+        el.pCount.textContent = `(${total} از ${total})`;
+      }
+    } else if (el.practiceBar) {
+      el.practiceBar.hidden = true;
+    }
+
     updateStripCurrent();
+  }
+
+  function advanceChord(delta = 1) {
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    if (!chordEls.length) return;
+
+    if (delta > 0 && state.progressIdx < chordEls.length) {
+      const currentEl = chordEls[state.progressIdx];
+      currentEl.classList.remove('current-chord');
+      currentEl.classList.add('done', 'just-hit');
+      setTimeout(() => currentEl.classList.remove('just-hit'), 400);
+    }
+
+    const prevIdx = state.progressIdx;
+    state.progressIdx = Math.max(0, Math.min(chordEls.length, state.progressIdx + delta));
+
+    if (state.progressIdx < chordEls.length) {
+      const nextEl = chordEls[state.progressIdx];
+      const nextLine = nextEl.closest('.line');
+      if (nextLine) {
+        const nextLineIdx = state.lineEls.indexOf(nextLine);
+        // Only scroll if we moved to a different line!
+        const prevEl = chordEls[prevIdx];
+        const prevLine = prevEl ? prevEl.closest('.line') : null;
+        if (nextLine !== prevLine && nextLineIdx >= 0) {
+          const targetY = state.lineCenters[nextLineIdx] - state.focusY;
+          window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
+          nextLine.classList.add("chord-hit");
+          setTimeout(() => nextLine.classList.remove("chord-hit"), 400);
+        }
+      }
+    } else {
+      toast("آهنگ تمام شد 🎉");
+    }
+
+    updateCurrentChordHighlight();
   }
 
   function updateStripCurrent() {
     const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
     const expected = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
     el.strip.querySelectorAll('.diagram').forEach((d) => {
-      d.classList.toggle('current-chord', !!expected && MT.sameChord(d.dataset.c, expected));
+      d.classList.toggle('current-chord', state.practiceMode && !!expected && MT.sameChord(d.dataset.c, expected));
     });
   }
 
@@ -450,7 +506,7 @@
       if (Math.abs(window.scrollY - this.lastSet) > 3) this.pos = window.scrollY;
 
       // In chord-sync practice mode (when mic is listening), movement is driven by guitar chords
-      if (listener.active) {
+      if (listener.active || state.practiceMode) {
         this.lastSet = window.scrollY;
         this.raf = requestAnimationFrame((t) => this.step(t));
         return;
@@ -671,6 +727,7 @@
 
   /** Advance one chord at a time using actual DOM order of chords in the sheet. */
   function advanceToDetectedChord(r) {
+    if (!state.practiceMode && !listener.active) return;
     const chordName = typeof r === 'string' ? r : (r && r.chord);
     if (!chordName) return;
     const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
@@ -683,7 +740,7 @@
     // Also check runner-up candidates if available
     if (!matched && r && r.candidates && r.candidates.length) {
       for (let i = 0; i < Math.min(3, r.candidates.length); i++) {
-        if (r.candidates[i].score >= 0.70 && MT.sameChord(expected, r.candidates[i].name)) {
+        if (r.candidates[i].score >= 0.55 && MT.sameChord(expected, r.candidates[i].name)) {
           matched = true;
           break;
         }
@@ -702,7 +759,7 @@
 
     if (!matched) return; // wrong chord, wait
 
-    // Anti-chatter: if re-strumming same chord name, require onset or debounce > 350ms
+    // Anti-chatter: debounce same chord repetition (need onset or >350ms)
     const now = performance.now();
     const isSameChord = lastAdvancedChord && MT.sameChord(lastAdvancedChord, chordName);
     const hasOnset = r && r.onset;
@@ -713,39 +770,7 @@
     lastAdvanceTime = now;
     lastAdvancedChord = chordName;
 
-    // Mark current chord done
-    currentEl.classList.remove('current-chord');
-    currentEl.classList.add('done', 'just-hit');
-    setTimeout(() => currentEl.classList.remove('just-hit'), 400);
-
-    if (skip > 0) {
-      state.progressIdx += skip;
-      const skippedEl = chordEls[state.progressIdx];
-      skippedEl.classList.add('done', 'just-hit');
-      setTimeout(() => skippedEl.classList.remove('just-hit'), 400);
-    }
-
-    state.progressIdx++;
-
-    // Highlight the next chord
-    updateCurrentChordHighlight();
-
-    // Scroll to the line containing the next chord
-    if (state.progressIdx < chordEls.length) {
-      const nextEl = chordEls[state.progressIdx];
-      const line = nextEl.closest('.line');
-      if (line) {
-        const idx = state.lineEls.indexOf(line);
-        if (idx >= 0) {
-          const targetY = state.lineCenters[idx] - state.focusY;
-          window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
-          line.classList.add("chord-hit");
-          setTimeout(() => line.classList.remove("chord-hit"), 400);
-        }
-      }
-    } else {
-      toast("آهنگ تمام شد 🎉");
-    }
+    advanceChord(1 + skip);
   }
 
   function onDetect(r, err) {
@@ -891,19 +916,36 @@
     if (bpm) setBpm(bpm);
   });
 
-  el.micBtn.addEventListener('click', () => {
-    if (listener.active) {
-      stopListening(true);
-      if (!scroller.playing) el.focusLine.classList.remove('show');
-    } else {
-      // Start chord-sync practice mode
-      resetChordProgress();
+  function setPracticeMode(active) {
+    state.practiceMode = active;
+    if (active) {
+      if (scroller.playing) scroller.stop();
       el.focusLine.classList.add('show');
+      if (el.practiceBar) el.practiceBar.hidden = false;
+      resetChordProgress();
       startListening('mic').then(() => {
-        toast('🎸 حالت همگام با گیتار: با نواختن آکوردها، صفحه جلو می‌رود');
+        toast('🎸 حالت تشخیص آکورد: با نواختن آکوردها یکی‌یکی جلو می‌رود');
         updateCurrentChordHighlight();
+      }).catch(() => {
+        toast('میکروفون فعال نشد. با کلیک، Space یا دکمه‌های بعدی/قبلی می‌توانید تمرین کنید.');
       });
+    } else {
+      stopListening(true);
+      if (el.practiceBar) el.practiceBar.hidden = true;
+      el.focusLine.classList.remove('show');
+      updateCurrentChordHighlight();
     }
+  }
+
+  el.micBtn.addEventListener('click', () => {
+    setPracticeMode(!state.practiceMode);
+  });
+
+  if (el.pPrevBtn) el.pPrevBtn.addEventListener('click', () => advanceChord(-1));
+  if (el.pNextBtn) el.pNextBtn.addEventListener('click', () => advanceChord(1));
+  if (el.pRestartBtn) el.pRestartBtn.addEventListener('click', () => {
+    resetChordProgress();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
   el.themeBtn.addEventListener('click', toggleTheme);
   el.fsBtn.addEventListener('click', () => {
@@ -1074,8 +1116,27 @@
     // Keyboard
     document.addEventListener('keydown', (ev) => {
       if (ev.target.matches('input, textarea, select')) return;
-      if (ev.key === ' ') { ev.preventDefault(); scroller.toggle(); }
-      else if (ev.key === 'r' || ev.key === 'R') scroller.restart();
+      if (ev.key === ' ') {
+        ev.preventDefault();
+        if (state.practiceMode) advanceChord(1);
+        else scroller.toggle();
+      }
+      else if (ev.key === 'ArrowRight' && state.practiceMode) {
+        ev.preventDefault();
+        advanceChord(1);
+      }
+      else if (ev.key === 'ArrowLeft' && state.practiceMode) {
+        ev.preventDefault();
+        advanceChord(-1);
+      }
+      else if (ev.key === 'r' || ev.key === 'R') {
+        if (state.practiceMode) {
+          resetChordProgress();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          scroller.restart();
+        }
+      }
       else if (ev.key === 'ArrowUp') {
         ev.preventDefault();
         el.speed.value = Math.min(100, +el.speed.value + 5);

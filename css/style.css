@@ -263,21 +263,90 @@ main {
 }
 .cd b:hover { background: color-mix(in srgb, var(--chord) 15%, transparent); }
 .cd b.match, .cd b.hit { color: var(--match); background: var(--match-bg); box-shadow: 0 0 0 2px var(--match); }
-.cd b.done { color: var(--match); background: var(--match-bg); }
+.cd b.done {
+  color: #fff !important;
+  background: #16a34a !important;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.4) !important;
+  border-radius: 4px;
+  padding: 1px 4px !important;
+  display: inline-block;
+}
 .cd b.current-chord {
-  color: var(--accent-ink);
-  background: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
-  animation: pulse-chord 1.2s infinite ease-in-out;
+  color: #fff !important;
+  background: #ea580c !important;
+  box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.45), 0 2px 10px rgba(234, 88, 12, 0.4) !important;
+  border-radius: 6px !important;
+  padding: 1px 6px !important;
+  margin: 0 -2px !important;
+  display: inline-block !important;
+  font-weight: 800 !important;
+  position: relative !important;
+  z-index: 10 !important;
+  transform: scale(1.18);
+  animation: target-pulse 1s infinite alternate ease-in-out;
+}
+.cd b.current-chord::after {
+  content: "▼";
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  line-height: 1;
+  color: #ea580c;
+  animation: bounce-arrow 0.6s infinite alternate ease-in-out;
 }
 .cd b.just-hit {
-  transform: scale(1.25);
+  transform: scale(1.3) !important;
   transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
-@keyframes pulse-chord {
-  0%, 100% { box-shadow: 0 0 0 2px var(--accent); }
-  50% { box-shadow: 0 0 8px 3px var(--accent); }
+@keyframes bounce-arrow {
+  from { transform: translateX(-50%) translateY(0); }
+  to { transform: translateX(-50%) translateY(-3px); }
 }
+@keyframes target-pulse {
+  from { box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.4), 0 2px 6px rgba(234, 88, 12, 0.3); }
+  to { box-shadow: 0 0 0 5px rgba(234, 88, 12, 0.8), 0 4px 14px rgba(234, 88, 12, 0.6); }
+}
+
+/* Practice Bar */
+.practice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--paper);
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  padding: 8px 14px;
+  margin: 10px 0;
+  box-shadow: var(--shadow);
+  position: sticky;
+  top: var(--appbar-h);
+  z-index: 30;
+  backdrop-filter: blur(8px);
+}
+.practice-bar[hidden] { display: none; }
+.practice-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  flex-wrap: wrap;
+}
+.p-badge { font-weight: 600; color: var(--muted); }
+.p-chord {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #fff;
+  background: #ea580c;
+  padding: 2px 10px;
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px #ea580c, 0 2px 8px rgba(0,0,0,0.15);
+  animation: target-pulse 1s infinite alternate ease-in-out;
+}
+.p-next { color: var(--muted); font-size: 0.85rem; }
+.p-count { font-size: 0.85rem; color: var(--muted); margin-inline-start: 6px; }
+.practice-actions { display: flex; align-items: center; gap: 6px; }
 .ly { display: block; white-space: pre; line-height: 1.4em; }
 /* Monospace fonts have no Persian/Arabic glyphs; RTL lyrics use the UI font
    (alignment does not depend on monospace: each chord sits on its chunk). */

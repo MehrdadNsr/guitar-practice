@@ -83,6 +83,20 @@
 
   <section class="chord-strip" id="chordStrip" aria-label="آکوردهای این آهنگ"></section>
 
+  <div class="practice-bar" id="practiceBar" hidden>
+    <div class="practice-info">
+      <span class="p-badge">🎯 آکورد هدف:</span>
+      <strong class="p-chord mono" id="pTargetChord">—</strong>
+      <span class="p-next mono" id="pNextChord"></span>
+      <span class="p-count mono" id="pCount">(۰ / ۰)</span>
+    </div>
+    <div class="practice-actions">
+      <button type="button" id="pPrevBtn" class="small icon-btn" title="آکورد قبلی">◀</button>
+      <button type="button" id="pNextBtn" class="small icon-btn" title="آکورد بعدی (Space / کلیک)">▶</button>
+      <button type="button" id="pRestartBtn" class="small icon-btn" title="از اول">↺</button>
+    </div>
+  </div>
+
   <div id="topSpacer" aria-hidden="true"></div>
   <article class="sheet" id="sheet" dir="ltr" lang="en" aria-label="آکورد و متن آهنگ"></article>
   <div class="sheet-end" id="sheetEnd" aria-hidden="true">— پایان —</div>

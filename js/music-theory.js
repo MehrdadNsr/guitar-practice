@@ -60,10 +60,16 @@
   QUALITIES.forEach((q) => q.suffixes.forEach((s) => SUFFIX_TO_QUALITY.set(s, q)));
   const QUALITY_BY_ID = new Map(QUALITIES.map((q) => [q.id, q]));
 
-  const CHORD_RE = /^([A-G])(#|b|♯|♭)?([^/]*?)(?:\/([A-G])(#|b|♯|♭)?)?$/;
+  const CHORD_RE = /^([A-Ga-g])(#|b|♯|♭)?([^/]*?)(?:\/([A-Ga-g])(#|b|♯|♭)?)?$/;
   // Characters allowed in a chord suffix. Keeps words like "Bridge" or
   // "Chorus" from being mistaken for chords.
   const SUFFIX_RE = /^(?:maj|min|mi|ma|m|M|dim|aug|sus|add|dom|no|omit|alt|Δ|ø|°|o|\+|-|\(|\)|#|b|♯|♭|\d|,)*$/;
+
+  function normalizeKeyText(value) {
+    const text = String(value || '').trim().replace(/[♯]/g, '#').replace(/[♭]/g, 'b');
+    if (!text) return '';
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
 
   function mod12(n) {
     return ((n % 12) + 12) % 12;
@@ -116,13 +122,13 @@
     if (!m) return null;
     const suffix = m[3] || '';
     if (!SUFFIX_RE.test(suffix)) return null;
-    const root = m[1] + normalizeAccidental(m[2]);
+    const root = m[1].toUpperCase() + normalizeAccidental(m[2]);
     const rootPc = NOTE_TO_PC[root];
     if (rootPc === undefined) return null;
     let bass = null;
     let bassPc = null;
     if (m[4]) {
-      bass = m[4] + normalizeAccidental(m[5]);
+      bass = m[4].toUpperCase() + normalizeAccidental(m[5]);
       bassPc = NOTE_TO_PC[bass];
       if (bassPc === undefined) return null;
     }
@@ -148,7 +154,7 @@
   /** Does this key name prefer flat spellings? */
   function keyPrefersFlats(keyName) {
     if (!keyName) return false;
-    const k = String(keyName).trim().replace('♭', 'b').replace('♯', '#');
+    const k = normalizeKeyText(keyName);
     if (FLAT_KEYS.has(k)) return true;
     if (/^[A-G]#/.test(k)) return false;
     return /^[A-G]b/.test(k);

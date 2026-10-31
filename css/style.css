@@ -262,6 +262,7 @@ main {
 }
 .cd b:hover { background: color-mix(in srgb, var(--chord) 15%, transparent); }
 .cd b.match { color: var(--match); background: var(--match-bg); box-shadow: 0 0 0 2px var(--match); }
+.cd b.done { color: var(--match); background: var(--match-bg); }
 .ly { display: block; white-space: pre; line-height: 1.4em; }
 /* Monospace fonts have no Persian/Arabic glyphs; RTL lyrics use the UI font
    (alignment does not depend on monospace: each chord sits on its chunk). */

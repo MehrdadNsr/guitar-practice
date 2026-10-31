@@ -645,6 +645,7 @@
         active: this.display.active,
         candidates: this.last || [],
         chroma: viz,
+        rawChroma: raw,
         levelDb: level,
         threshold,
         gateOpen: this.gateOpen,
@@ -652,6 +653,70 @@
         tuningCents: Math.round(this.tuning * 100),
         onset,
         status: this.display.active && status !== 'analyzing' ? 'detected' : status,
+      };
+    }
+
+    /**
+     * Evaluates a specific target chord against a 12-bin chroma vector.
+     * Returns correlation score, rank among templates, and competitor margin.
+     */
+    evaluateTarget(chroma, targetChordName, bass) {
+      if (!targetChordName) return null;
+      const parsed = MT.parseChord(targetChordName);
+      if (!parsed) return null;
+
+      let mean = 0;
+      for (let i = 0; i < 12; i++) mean += chroma[i];
+      mean /= 12;
+      const centred = new Float64Array(12);
+      let norm = 0;
+      for (let i = 0; i < 12; i++) {
+        centred[i] = chroma[i] - mean;
+        norm += centred[i] * centred[i];
+      }
+      norm = Math.sqrt(norm);
+      if (norm === 0) {
+        return { target: targetChordName, targetScore: 0, rank: 99, bestChord: null, bestScore: 0, margin: 0, isBest: false };
+      }
+
+      // Rank all templates in current tracker vocabulary
+      const ranked = this._evaluate(chroma, bass);
+      const best = ranked[0] || { name: null, score: 0 };
+
+      // Find the score and rank for the target chord
+      let targetEntry = ranked.find((r) => MT.sameChord(r.name, targetChordName));
+      let targetScore = 0;
+      let rank = ranked.length + 1;
+
+      if (targetEntry) {
+        targetScore = targetEntry.score;
+        rank = ranked.indexOf(targetEntry) + 1;
+      } else {
+        // If target is not in the tracker's templates list, calculate its score directly
+        const tpl = makeTemplate(targetChordName, parsed);
+        let s = 0;
+        for (let i = 0; i < 12; i++) s += centred[i] * tpl.vec[i];
+        targetScore = s / norm;
+        if (bass) {
+          if (parsed.rootPc === bass.pc) targetScore += this.opts.bassRootBonus * bass.confidence;
+          else if (parsed.pcs.includes(bass.pc)) targetScore += this.opts.bassToneBonus * bass.confidence;
+          else targetScore -= this.opts.bassMissPenalty * bass.confidence;
+        }
+        rank = ranked.filter((r) => r.score > targetScore).length + 1;
+      }
+
+      const runnerUp = ranked.find((r) => !MT.sameChord(r.name, targetChordName));
+      const margin = runnerUp ? targetScore - runnerUp.score : targetScore;
+
+      return {
+        target: targetChordName,
+        targetScore,
+        rank,
+        bestChord: best.name,
+        bestScore: best.score,
+        margin,
+        isBest: rank === 1 || MT.sameChord(best.name, targetChordName),
+        ranked: ranked.slice(0, 5),
       };
     }
 
@@ -673,8 +738,397 @@
     }
   }
 
+  // -------------------------------------------------------- song follower FSM
+
+  const FOLLOWER_CONFIGS = {
+    strict: {
+      minScore: 0.60,
+      maxRank: 2,
+      margin: 0.04,
+      minHoldRatio: 0.55,
+      name: 'سخت‌گیرانه (Strict)',
+    },
+    normal: {
+      minScore: 0.50,
+      maxRank: 3,
+      margin: 0.00,
+      minHoldRatio: 0.45,
+      name: 'معمولی (Normal)',
+    },
+    loose: {
+      minScore: 0.40,
+      maxRank: 5,
+      margin: -0.08,
+      minHoldRatio: 0.35,
+      name: 'آسان‌گیر (Loose)',
+    },
+  };
+
+  /**
+   * SongFollower: Strict Finite State Machine for interactive play-along song progression.
+   *
+   * Enforces:
+   *  1. Only the current expected chord is evaluated.
+   *  2. Advance occurs strictly on a confirmed new strum (never on sustained/ringing audio).
+   *  3. Advances exactly ONE step per accepted strum, never skipping ahead.
+   *  4. After an accepted chord, enters LOCKOUT until the string vibration decays and a new onset occurs.
+   *  5. Multi-frame smoothing (hysteresis) across 200–300 ms post-strum window.
+   */
+  class SongFollower {
+    constructor(tracker, options) {
+      this.tracker = tracker;
+      this.opts = Object.assign({
+        strictness: 'strict',
+        attackSkipMs: 35,         // ignore initial pick-attack transient
+        evalWindowMs: 250,        // 250 ms post-strum accumulation
+        evalMinFrames: 3,         // need at least 3 frames
+        lockoutMs: 280,           // lockout post-acceptance
+        restrumRefractoryMs: 200, // min time between attacks
+      }, options || {});
+
+      this.target = null;
+      this.state = 'WAITING_FOR_STRUM'; // 'WAITING_FOR_STRUM' | 'EVALUATING' | 'LOCKOUT'
+      this.windowStart = 0;
+      this.windowFrames = [];
+      this.lastAcceptedAt = -Infinity;
+      this.lastStrumAt = -Infinity;
+      this.lastStrumLevel = -Infinity;
+      this.log = [];
+      this.stats = {
+        acceptedCount: 0,
+        rejectedCount: 0,
+        strumsDetected: 0,
+      };
+    }
+
+    setTarget(chordName) {
+      const prev = this.target;
+      this.target = chordName || null;
+      if (prev !== this.target) {
+        if (this.state === 'EVALUATING') {
+          this.state = 'WAITING_FOR_STRUM';
+          this.windowFrames = [];
+        }
+      }
+    }
+
+    setStrictness(level) {
+      if (FOLLOWER_CONFIGS[level]) {
+        this.opts.strictness = level;
+      }
+    }
+
+    reset() {
+      this.state = 'WAITING_FOR_STRUM';
+      this.windowStart = 0;
+      this.windowFrames = [];
+      this.lastAcceptedAt = -Infinity;
+      this.lastStrumAt = -Infinity;
+      this.lastStrumLevel = -Infinity;
+      this.log = [];
+      this.stats = {
+        acceptedCount: 0,
+        rejectedCount: 0,
+        strumsDetected: 0,
+      };
+    }
+
+    /**
+     * Process one frame from ChordTracker.
+     * r = result from tracker.process()
+     * t = timestamp in ms
+     */
+    process(r, t) {
+      if (!this.target) {
+        return {
+          state: 'IDLE',
+          action: null,
+          target: null,
+          targetScore: 0,
+          bestChord: r ? r.chord : null,
+          bestScore: r ? r.score : 0,
+          isOnset: r ? r.onset : false,
+          reason: 'No target chord set',
+        };
+      }
+
+      const now = t !== undefined ? t : (r && r.t ? r.t : (typeof performance !== 'undefined' ? performance.now() : Date.now()));
+      const level = r ? (Number.isFinite(r.levelDb) ? r.levelDb : -120) : -120;
+      const cfg = FOLLOWER_CONFIGS[this.opts.strictness] || FOLLOWER_CONFIGS.strict;
+
+      // 1. LOCKOUT handling:
+      // When a chord was just accepted, ignore all audio until the strum has decayed AND a new strum attack occurs.
+      if (this.state === 'LOCKOUT') {
+        const elapsedSinceAccepted = now - this.lastAcceptedAt;
+        if (elapsedSinceAccepted < this.opts.lockoutMs) {
+          return {
+            state: 'LOCKOUT',
+            action: null,
+            target: this.target,
+            targetScore: 0,
+            bestChord: r ? r.chord : null,
+            bestScore: r ? r.score : 0,
+            isOnset: false,
+            reason: `قفل ارتعاش (${Math.round(this.opts.lockoutMs - elapsedSinceAccepted)}ms باقی‌مانده)`,
+          };
+        }
+
+        // Lockout elapsed. Can we accept a new strum?
+        // Only if a fresh onset is triggered with sufficient refractory gap.
+        const canExitLockout = r && r.onset && (now - this.lastStrumAt >= this.opts.restrumRefractoryMs);
+        if (canExitLockout) {
+          this.state = 'WAITING_FOR_STRUM';
+          // Fall through to WAITING_FOR_STRUM below to immediately capture this onset!
+        } else {
+          // If strings are still ringing continuously without a new attack, stay in lockout protection
+          return {
+            state: 'LOCKOUT',
+            action: null,
+            target: this.target,
+            targetScore: 0,
+            bestChord: r ? r.chord : null,
+            bestScore: r ? r.score : 0,
+            isOnset: false,
+            reason: 'در انتظار مضراب جدید (ارتعاش سیم‌های قبلی نادیده گرفته شد)',
+          };
+        }
+      }
+
+      // Evaluate the current target chord against the current frame's chroma for live feedback
+      const activeChroma = (r && r.rawChroma) || (r && r.chroma);
+      let currentEval = null;
+      if (activeChroma && this.tracker && this.tracker.evaluateTarget) {
+        currentEval = this.tracker.evaluateTarget(activeChroma, this.target, r ? r.bass : null);
+      }
+
+      // 2. WAITING_FOR_STRUM handling:
+      if (this.state === 'WAITING_FOR_STRUM') {
+        const isFreshOnset = r && r.onset && (now - this.lastStrumAt >= this.opts.restrumRefractoryMs) && r.gateOpen;
+        if (isFreshOnset) {
+          this.state = 'EVALUATING';
+          this.windowStart = now;
+          this.windowFrames = [];
+          this.lastStrumAt = now;
+          this.lastStrumLevel = level;
+          this.stats.strumsDetected++;
+
+          return {
+            state: 'EVALUATING',
+            action: null,
+            event: 'onset',
+            target: this.target,
+            targetScore: currentEval ? currentEval.targetScore : 0,
+            bestChord: currentEval ? currentEval.bestChord : (r ? r.chord : null),
+            bestScore: currentEval ? currentEval.bestScore : (r ? r.score : 0),
+            isOnset: true,
+            reason: 'مضراب جدید شناسایی شد، در حال ارزیابی...',
+          };
+        }
+
+        return {
+          state: 'WAITING_FOR_STRUM',
+          action: null,
+          target: this.target,
+          targetScore: currentEval ? currentEval.targetScore : 0,
+          bestChord: currentEval ? currentEval.bestChord : (r ? r.chord : null),
+          bestScore: currentEval ? currentEval.bestScore : (r ? r.score : 0),
+          isOnset: false,
+          reason: 'منتظر نواختن آکورد هدف ' + this.target,
+        };
+      }
+
+      // 3. EVALUATING handling (Accumulate frames over evalWindowMs):
+      if (this.state === 'EVALUATING') {
+        const windowAge = now - this.windowStart;
+        if (windowAge >= this.opts.attackSkipMs && r && activeChroma && r.gateOpen && currentEval) {
+          this.windowFrames.push({
+            t: now,
+            eval: currentEval,
+            levelDb: level,
+            chroma: activeChroma,
+          });
+        }
+
+        const shouldDecide = windowAge >= this.opts.evalWindowMs || (!r.gateOpen && this.windowFrames.length >= this.opts.evalMinFrames);
+
+        if (!shouldDecide) {
+          return {
+            state: 'EVALUATING',
+            action: null,
+            target: this.target,
+            targetScore: currentEval ? currentEval.targetScore : 0,
+            bestChord: currentEval ? currentEval.bestChord : (r ? r.chord : null),
+            bestScore: currentEval ? currentEval.bestScore : (r ? r.score : 0),
+            isOnset: false,
+            reason: `در حال تجمیع فریم‌ها (${Math.round(windowAge)}/${this.opts.evalWindowMs}ms)`,
+          };
+        }
+
+        // --- WINDOW COMPLETE: MAKE DECISION ---
+        const frames = this.windowFrames;
+        this.windowFrames = [];
+
+        if (frames.length < this.opts.evalMinFrames) {
+          // Too few frames (e.g. instant mute or noise glitch)
+          this.state = 'WAITING_FOR_STRUM';
+          const decision = {
+            t: now,
+            action: 'reject',
+            target: this.target,
+            score: 0,
+            best: null,
+            bestScore: 0,
+            reason: 'مدت صدای مضراب خیلی کوتاه بود (فریم‌های ناکافی)',
+          };
+          this._logDecision(decision);
+          return {
+            state: 'WAITING_FOR_STRUM',
+            action: 'reject',
+            target: this.target,
+            targetScore: 0,
+            bestChord: null,
+            bestScore: 0,
+            isOnset: false,
+            decision,
+            reason: decision.reason,
+          };
+        }
+
+        // Calculate metrics across window
+        let sumTargetScore = 0;
+        let sumBestScore = 0;
+        let targetThresholdHits = 0;
+        let topRankHits = 0;
+        const chordTally = new Map();
+
+        frames.forEach((f) => {
+          sumTargetScore += f.eval.targetScore;
+          sumBestScore += f.eval.bestScore;
+          if (f.eval.targetScore >= cfg.minScore) targetThresholdHits++;
+          if (f.eval.rank <= cfg.maxRank || MT.sameChord(f.eval.bestChord, this.target)) topRankHits++;
+
+          const b = f.eval.bestChord;
+          if (b) chordTally.set(b, (chordTally.get(b) || 0) + 1);
+        });
+
+        const numFrames = frames.length;
+        const avgTargetScore = sumTargetScore / numFrames;
+        const avgBestScore = sumBestScore / numFrames;
+        const targetHoldRatio = targetThresholdHits / numFrames;
+        const topRankRatio = topRankHits / numFrames;
+
+        let dominantChord = null;
+        let maxCount = 0;
+        chordTally.forEach((count, name) => {
+          if (count > maxCount) {
+            maxCount = count;
+            dominantChord = name;
+          }
+        });
+
+        const isSameAsDominant = dominantChord && MT.sameChord(dominantChord, this.target);
+
+        // Acceptance Criteria:
+        // 1. Average target score clears threshold
+        // 2. Target chord cleared threshold in required proportion of frames
+        // 3. Target chord was either top rank or within allowed margin of best
+        const scorePass = avgTargetScore >= cfg.minScore;
+        const holdPass = targetHoldRatio >= cfg.minHoldRatio || topRankRatio >= 0.6;
+        const rivalPass = isSameAsDominant || (avgBestScore - avgTargetScore <= (cfg.margin ? 0.10 : 0.15));
+
+        const accepted = scorePass && holdPass && rivalPass;
+
+        if (accepted) {
+          this.state = 'LOCKOUT';
+          this.lastAcceptedAt = now;
+          this.stats.acceptedCount++;
+
+          const decision = {
+            t: now,
+            action: 'advance',
+            target: this.target,
+            score: avgTargetScore,
+            best: dominantChord,
+            bestScore: avgBestScore,
+            frames: numFrames,
+            reason: `✓ آکورد ${this.target} تأیید شد (اطمینان ${Math.round(avgTargetScore * 100)}٪ >= ${Math.round(cfg.minScore * 100)}٪)`,
+          };
+          this._logDecision(decision);
+
+          return {
+            state: 'LOCKOUT',
+            action: 'advance',
+            target: this.target,
+            targetScore: avgTargetScore,
+            bestChord: dominantChord,
+            bestScore: avgBestScore,
+            isOnset: false,
+            decision,
+            reason: decision.reason,
+          };
+        } else {
+          // Rejected
+          this.state = 'WAITING_FOR_STRUM';
+          this.stats.rejectedCount++;
+
+          let reason = '';
+          if (!scorePass) {
+            reason = `✗ اطمینان پایین: امتیاز ${Math.round(avgTargetScore * 100)}٪ کمتر از آستانه ${Math.round(cfg.minScore * 100)}٪`;
+          } else if (dominantChord && !isSameAsDominant && (avgBestScore - avgTargetScore > 0.12)) {
+            reason = `✗ آکورد اشتباه: صدای ${dominantChord} شنیده شد (${Math.round(avgBestScore * 100)}٪)، آکورد هدف ${this.target} بود (${Math.round(avgTargetScore * 100)}٪)`;
+          } else if (!holdPass) {
+            reason = `✗ پایداری کم: آکورد فقط در ${Math.round(targetHoldRatio * 100)}٪ فریم‌ها پایدار بود (حداقل ${Math.round(cfg.minHoldRatio * 100)}٪)`;
+          } else {
+            reason = `✗ عدم انطباق با الگوی ${this.target}`;
+          }
+
+          const decision = {
+            t: now,
+            action: 'reject',
+            target: this.target,
+            score: avgTargetScore,
+            best: dominantChord,
+            bestScore: avgBestScore,
+            frames: numFrames,
+            reason,
+          };
+          this._logDecision(decision);
+
+          return {
+            state: 'WAITING_FOR_STRUM',
+            action: 'reject',
+            target: this.target,
+            targetScore: avgTargetScore,
+            bestChord: dominantChord,
+            bestScore: avgBestScore,
+            isOnset: false,
+            decision,
+            reason,
+          };
+        }
+      }
+
+      return {
+        state: this.state,
+        action: null,
+        target: this.target,
+        targetScore: currentEval ? currentEval.targetScore : 0,
+        bestChord: r ? r.chord : null,
+        bestScore: r ? r.score : 0,
+        isOnset: false,
+        reason: '',
+      };
+    }
+
+    _logDecision(decision) {
+      this.log.unshift(decision);
+      if (this.log.length > 30) this.log.pop();
+    }
+  }
+
   const api = {
     DEFAULTS,
+    FOLLOWER_CONFIGS,
     analyzeSpectrum,
     peaksToChroma,
     estimateTuning,
@@ -684,7 +1138,9 @@
     estimateBass,
     buildTemplates,
     rankTemplates,
+    makeTemplate,
     ChordTracker,
+    SongFollower,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

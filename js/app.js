@@ -421,7 +421,7 @@
       // The reader grabbed the page: continue from where they left it.
       if (Math.abs(window.scrollY - this.lastSet) > 3) this.pos = window.scrollY;
       // Chord-sync mode: do not auto-advance when detector is listening
-      if (true) { // always chord-sync when practice is active
+      if (listener.active || true) { // practice mode: no timer scroll
         this.lastSet = window.scrollY;
         this.raf = requestAnimationFrame((t) => this.step(t));
         return;
@@ -787,8 +787,19 @@
   });
 
   el.micBtn.addEventListener('click', () => {
-    if (listener.active) stopListening(true);
-    else startListening('mic');
+    if (listener.active) {
+      stopListening(true);
+      scroller.stop();
+    } else {
+      // Start practice: stop any timer scroll, start mic, reset progress
+      if (scroller.playing) scroller.stop();
+      state.progressIdx = 0;
+      state.playedSet.clear();
+      document.querySelectorAll('b.done').forEach(b => b.classList.remove('done'));
+      startListening('mic').then(() => {
+        toast('حالت تمرین: فقط با آکورد صحیح جلو می‌رود');
+      });
+    }
   });
   el.themeBtn.addEventListener('click', toggleTheme);
   el.fsBtn.addEventListener('click', () => {

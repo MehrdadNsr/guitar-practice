@@ -153,3 +153,53 @@ test('consecutive identical chords (Am -> Am -> G) require a second strum to adv
   // Verify the second Am was only accepted after the second strum (t >= 1800ms)
   assert.ok(res.history[1].t >= 1800, 'Second Am must wait for second strum');
 });
+
+test('repeated strums of the current chord do NOT cascade to next chords', () => {
+  // If player repeatedly strums Am 6 times, it should only advance Am once, then wait for C
+  const song = ['Am', 'C', 'Em'];
+  const g = new S.Guitar(SR, S.mulberry32(707));
+  for (let k = 0; k < 6; k++) {
+    g.strum(0.3 + k * 0.4, 'Am', { amp: 0.3 });
+  }
+  const sig = g.render(3.0);
+
+  const res = runSimulation(sig, song, { strictness: 'strict' });
+
+  assert.equal(res.progressIdx, 1, 'Should advance Am once, then reject subsequent Am strums for target C');
+  assert.equal(res.history.length, 1);
+  assert.equal(res.history[0].chord, 'Am');
+  assert.ok(res.log.some((l) => l.action === 'reject' && l.target === 'C'), 'Rejections for C logged when Am strummed');
+});
+
+test('strictness settings control threshold: strict requires higher confidence than loose', () => {
+  const { tracker } = createSimulator(['Am', 'C']);
+  const strictFollower = new CD.SongFollower(tracker, { strictness: 'strict' });
+  const looseFollower = new CD.SongFollower(tracker, { strictness: 'loose' });
+
+  assert.equal(CD.FOLLOWER_CONFIGS.strict.minScore, 0.60);
+  assert.equal(CD.FOLLOWER_CONFIGS.normal.minScore, 0.50);
+  assert.equal(CD.FOLLOWER_CONFIGS.loose.minScore, 0.40);
+
+  strictFollower.setStrictness('normal');
+  assert.equal(strictFollower.opts.strictness, 'normal');
+});
+
+test('rejection log formats human-readable explanations', () => {
+  const { tracker, follower } = createSimulator(['Am', 'C']);
+  follower.setTarget('Am');
+
+  // Decision logging test
+  follower._logDecision({
+    t: 1000,
+    action: 'reject',
+    target: 'Am',
+    score: 0.35,
+    best: 'G',
+    bestScore: 0.78,
+    reason: '✗ آکورد اشتباه: صدای G شنیده شد (78٪)، آکورد هدف Am بود (35٪)',
+  });
+
+  assert.equal(follower.log.length, 1);
+  assert.equal(follower.log[0].action, 'reject');
+  assert.ok(follower.log[0].reason.includes('صدای G شنیده شد'));
+});

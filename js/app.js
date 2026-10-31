@@ -305,6 +305,7 @@
     chordEls.forEach((b) => {
       b.classList.remove('done', 'current-chord', 'just-hit', 'match', 'hit');
     });
+    if (typeof follower !== 'undefined' && follower) follower.reset();
     updateCurrentChordHighlight();
   }
 
@@ -316,9 +317,13 @@
       b.classList.toggle('current-chord', state.practiceMode && i === state.progressIdx);
     });
 
+    const current = chordEls[state.progressIdx];
+    if (typeof follower !== 'undefined' && follower) {
+      follower.setTarget(current ? current.dataset.c : null);
+    }
+
     if (state.practiceMode && el.practiceBar) {
       el.practiceBar.hidden = false;
-      const current = chordEls[state.progressIdx];
       const next = chordEls[state.progressIdx + 1];
       if (current) {
         el.pTargetChord.textContent = current.dataset.c;
@@ -617,7 +622,10 @@
   // ------------------------------------------------------ chord detector
 
   const tracker = new CD.ChordTracker();
+  const follower = new CD.SongFollower(tracker, { strictness: settings.strictness || 'strict' });
   const listener = new AE.ChordListener(tracker, onDetect);
+  const recorder = new AE.AudioRecorder();
+  let recordedBlob = null;
   const NOTE_NAMES = MT.SHARP_NAMES;
   const chromaBars = [];
   (function buildChroma() {
@@ -631,6 +639,12 @@
     alt: $('detAlt'), level: $('levelFill'), gate: $('levelGate'), history: $('detHistory'),
     songOnly: $('songOnly'), sens: $('sensitivity'), file: $('audioFile'), useMic: $('useMicBtn'),
     close: $('detClose'), min: $('detMin'),
+    dbgToggle: $('dbgToggleBtn'), dbgPanel: $('dbgPanel'), fsmBadge: $('dbgFsmBadge'), strumLed: $('dbgStrumLed'),
+    targetVal: $('dbgTargetVal'), bestVal: $('dbgBestVal'), targetScoreNum: $('dbgTargetScoreNum'),
+    threshNum: $('dbgThreshNum'), targetScoreFill: $('dbgTargetScoreFill'), targetThreshLine: $('dbgTargetThreshLine'),
+    liveReason: $('dbgLiveReason'), recordBtn: $('dbgRecordBtn'), playRecordBtn: $('dbgPlayRecordBtn'),
+    recordTimer: $('dbgRecordTimer'), testSeqBtn: $('dbgTestSeqBtn'), testRingingBtn: $('dbgTestRingingBtn'),
+    clearLogBtn: $('dbgClearLogBtn'), logList: $('dbgLogList'),
   };
   let lastShown = null;
   let historyList = [];
@@ -722,55 +736,89 @@
     det.conf.style.width = '0%';
   }
 
-  let lastAdvanceTime = 0;
-  let lastAdvancedChord = '';
+  let lastStrumFlashTimeout = null;
+
+  function updateDebugView(r, fRes, target) {
+    if (!det.dbgPanel || det.dbgPanel.hidden) return;
+
+    const strictness = (follower && follower.opts && follower.opts.strictness) || 'strict';
+    const cfg = (CD.FOLLOWER_CONFIGS && CD.FOLLOWER_CONFIGS[strictness]) || { minScore: 0.60 };
+    const targetScore = fRes ? fRes.targetScore : 0;
+    const bestChord = fRes ? fRes.bestChord : (r ? r.chord : null);
+    const bestScore = fRes ? fRes.bestScore : (r ? r.score : 0);
+    const stateName = fRes ? fRes.state : 'IDLE';
+
+    // FSM State badge
+    if (det.fsmBadge) {
+      det.fsmBadge.textContent = stateName;
+      det.fsmBadge.className = 'dbg-fsm-badge ' + (
+        stateName === 'WAITING_FOR_STRUM' ? 'state-waiting' :
+        stateName === 'EVALUATING' ? 'state-evaluating' :
+        stateName === 'ACCEPTED' ? 'state-accepted' :
+        stateName === 'LOCKOUT' ? 'state-lockout' : ''
+      );
+    }
+
+    // Strum LED flash
+    if (det.strumLed && ((fRes && fRes.isOnset) || (r && r.onset))) {
+      det.strumLed.classList.add('active');
+      clearTimeout(lastStrumFlashTimeout);
+      lastStrumFlashTimeout = setTimeout(() => {
+        if (det.strumLed) det.strumLed.classList.remove('active');
+      }, 250);
+    }
+
+    // Target vs Heard
+    if (det.targetVal) det.targetVal.textContent = target || '—';
+    if (det.bestVal) det.bestVal.textContent = bestChord ? `${bestChord} (${Math.round(bestScore * 100)}٪)` : '—';
+
+    // Confidence meter & threshold mark
+    const threshPct = Math.round(cfg.minScore * 100);
+    const scorePct = Math.round(clamp(targetScore, 0, 1) * 100);
+    if (det.targetScoreNum) det.targetScoreNum.textContent = scorePct + '٪';
+    if (det.threshNum) det.threshNum.textContent = threshPct + '٪';
+    if (det.targetScoreFill) det.targetScoreFill.style.width = scorePct + '%';
+    if (det.targetThreshLine) det.targetThreshLine.style.left = threshPct + '%';
+
+    // Live reason text
+    if (det.liveReason && fRes && fRes.reason) {
+      det.liveReason.textContent = fRes.reason;
+    }
+
+    // Render decision log
+    renderDebugLog();
+  }
+
+  function renderDebugLog() {
+    if (!det.logList) return;
+    if (!follower || !follower.log || !follower.log.length) {
+      det.logList.innerHTML = '<span class="dbg-log-item">هنوز رویدادی ثبت نشده است</span>';
+      return;
+    }
+    det.logList.innerHTML = follower.log.slice(0, 15).map((d) => {
+      const cls = d.action === 'advance' ? 'advance' : (d.action === 'reject' ? 'reject' : 'lockout');
+      const timeStr = new Date(d.t).toLocaleTimeString('fa-IR', { minute: '2-digit', second: '2-digit' });
+      return `<div class="dbg-log-item ${cls}">[${timeStr}] ${esc(d.reason)}</div>`;
+    }).join('');
+  }
 
   /** Advance one chord at a time using actual DOM order of chords in the sheet. */
   function advanceToDetectedChord(r) {
     if (!state.practiceMode && !listener.active) return;
-    const chordName = typeof r === 'string' ? r : (r && r.chord);
-    if (!chordName) return;
     const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
     if (!chordEls.length || state.progressIdx >= chordEls.length) return;
 
-    const currentEl = chordEls[state.progressIdx];
-    const expected = currentEl.dataset.c;
-    let matched = MT.sameChord(expected, chordName);
+    const currentTarget = chordEls[state.progressIdx].dataset.c;
+    follower.setTarget(currentTarget);
+    const followerRes = follower.process(r);
 
-    // Also check runner-up candidates if available
-    if (!matched && r && r.candidates && r.candidates.length) {
-      for (let i = 0; i < Math.min(3, r.candidates.length); i++) {
-        if (r.candidates[i].score >= 0.55 && MT.sameChord(expected, r.candidates[i].name)) {
-          matched = true;
-          break;
-        }
-      }
+    if (followerRes && followerRes.action === 'advance') {
+      advanceChord(1); // Advance strictly 1 step! Never skip ahead!
+      const nextTarget = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+      follower.setTarget(nextTarget);
     }
 
-    // Look-ahead tolerance (skip at most 1 chord if the player moved ahead)
-    let skip = 0;
-    if (!matched && state.progressIdx + 1 < chordEls.length) {
-      const nextExpected = chordEls[state.progressIdx + 1].dataset.c;
-      if (MT.sameChord(nextExpected, chordName)) {
-        matched = true;
-        skip = 1;
-      }
-    }
-
-    if (!matched) return; // wrong chord, wait
-
-    // Anti-chatter: debounce same chord repetition (need onset or >350ms)
-    const now = performance.now();
-    const isSameChord = lastAdvancedChord && MT.sameChord(lastAdvancedChord, chordName);
-    const hasOnset = r && r.onset;
-    if (isSameChord && !hasOnset && (now - lastAdvanceTime < 350)) {
-      return;
-    }
-
-    lastAdvanceTime = now;
-    lastAdvancedChord = chordName;
-
-    advanceChord(1 + skip);
+    updateDebugView(r, followerRes, currentTarget);
   }
 
   function onDetect(r, err) {
@@ -781,7 +829,11 @@
       wakeLock.update();
       return;
     }
-    // Chord name
+
+    // Advance chord progression on strict strum match
+    advanceToDetectedChord(r);
+
+    // General display chord
     const name = r.chord;
     if (name !== lastShown) {
       lastShown = name;
@@ -798,8 +850,7 @@
       highlightMatches();
       renderHistory();
     }
-    // Advance chord progression on chord match
-    if (name) advanceToDetectedChord(r);
+
     det.chord.classList.toggle('stale', !r.active);
     det.conf.style.width = (name && r.active ? clamp(r.score, 0, 1) * 100 : 0) + '%';
     setDetStatus(STATUS_TEXT[r.status] || '', true);
@@ -981,6 +1032,101 @@
   });
   det.useMic.addEventListener('click', () => startListening('mic'));
 
+  // Debug panel toggle and controls
+  if (det.dbgToggle) {
+    det.dbgToggle.addEventListener('click', () => {
+      det.dbgPanel.hidden = !det.dbgPanel.hidden;
+      det.dbgToggle.classList.toggle('active', !det.dbgPanel.hidden);
+      el.detector.classList.toggle('debug-open', !det.dbgPanel.hidden);
+      if (!det.dbgPanel.hidden) {
+        renderDebugLog();
+        const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+        const currentTarget = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+        updateDebugView(null, null, currentTarget);
+      }
+    });
+  }
+
+  if (det.clearLogBtn) {
+    det.clearLogBtn.addEventListener('click', () => {
+      follower.log = [];
+      renderDebugLog();
+    });
+  }
+
+  // Strictness radio listeners
+  Array.from(document.querySelectorAll('input[name="strictness"]')).forEach((radio) => {
+    radio.addEventListener('change', () => {
+      if (radio.checked) {
+        follower.setStrictness(radio.value);
+        settings.strictness = radio.value;
+        saveSettings();
+        const cfg = CD.FOLLOWER_CONFIGS[radio.value];
+        if (cfg) toast(`حالت تطابق: ${cfg.name}`);
+        const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+        const currentTarget = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+        updateDebugView(null, null, currentTarget);
+      }
+    });
+  });
+
+  // Audio recording & playback controls
+  if (det.recordBtn) {
+    det.recordBtn.addEventListener('click', async () => {
+      if (recorder.recording) {
+        recorder.stopRecording();
+        return;
+      }
+      det.recordBtn.textContent = '⏹ توقف ضبط';
+      det.recordBtn.classList.add('danger');
+      if (det.playRecordBtn) det.playRecordBtn.disabled = true;
+      try {
+        recordedBlob = await recorder.record(5000, (remaining) => {
+          if (det.recordTimer) det.recordTimer.textContent = `${remaining}s`;
+        });
+        det.recordBtn.textContent = '🔴 ضبط ۵ ثانیه';
+        det.recordBtn.classList.remove('danger');
+        if (det.recordTimer) det.recordTimer.textContent = 'آماده';
+        if (det.playRecordBtn) det.playRecordBtn.disabled = !recordedBlob;
+        toast('صدای گیتار ضبط شد! دکمه «تست ضبط» را بزن.');
+      } catch (e) {
+        det.recordBtn.textContent = '🔴 ضبط ۵ ثانیه';
+        det.recordBtn.classList.remove('danger');
+        if (det.recordTimer) det.recordTimer.textContent = 'خطا در ضبط';
+        toast('امکان ضبط صدا فراهم نشد: ' + ((e && e.message) || e));
+      }
+    });
+  }
+
+  if (det.playRecordBtn) {
+    det.playRecordBtn.addEventListener('click', () => {
+      if (recordedBlob) {
+        startListening('file', recordedBlob);
+      }
+    });
+  }
+
+  // Synthetic audio tests
+  if (det.testSeqBtn) {
+    det.testSeqBtn.addEventListener('click', () => {
+      const testChords = ['Am', 'C', 'Em', 'D'];
+      const wavBlob = AE.generateSyntheticProgression(testChords, { per: 1.6, lead: 0.3 });
+      resetChordProgress();
+      startListening('file', wavBlob);
+      toast('در حال اجرای تست توالی Am → C → Em → D');
+    });
+  }
+
+  if (det.testRingingBtn) {
+    det.testRingingBtn.addEventListener('click', () => {
+      const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+      const targetChord = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : 'Em';
+      const wavBlob = AE.generateRingingChord(targetChord, 3.2);
+      startListening('file', wavBlob);
+      toast(`در حال پخش آکورد کشیده ${targetChord}`);
+    });
+  }
+
   // ------------------------------------------------------------- add/edit song dialog
 
   const songDialog = $('songDialog');
@@ -1109,6 +1255,10 @@
     // Detector defaults
     det.songOnly.checked = settings.songOnly !== false;
     det.sens.value = settings.sensitivity || 55;
+    const initialStrictness = settings.strictness || 'strict';
+    follower.setStrictness(initialStrictness);
+    const radio = document.querySelector(`input[name="strictness"][value="${initialStrictness}"]`);
+    if (radio) radio.checked = true;
     // Songs
     populateSongSelect();
     const fromHash = songIdFromHash();
@@ -1172,7 +1322,7 @@
   }
 
   // Small debugging hook for the browser console.
-  window.GP.app = { state, scroller, metronome, tracker, listener, loadSong, setTranspose, setZoom, measure, advanceChord };
+  window.GP.app = { state, scroller, metronome, tracker, follower, listener, recorder, loadSong, setTranspose, setZoom, measure, advanceChord };
 
   init();
 })();

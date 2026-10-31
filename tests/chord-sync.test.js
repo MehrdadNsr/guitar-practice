@@ -12,39 +12,17 @@ test('sameChord matches exact, enharmonic and alias chords', () => {
   assert.ok(!MT.sameChord('A', 'Am'));
 });
 
-test('chord-sync sequential and tolerance advance logic simulation', () => {
+test('chord-sync sequential strict advance logic simulation (no lookahead skip)', () => {
   const songChords = ['Am', 'C', 'Em', 'D'];
   let progressIdx = 0;
   let played = [];
 
-  function tryAdvance(detectedName, candidates, isOnset) {
+  function tryAdvance(detectedName, isOnset) {
     if (progressIdx >= songChords.length) return false;
     const expected = songChords[progressIdx];
-    let matched = MT.sameChord(expected, detectedName);
-
-    if (!matched && candidates && candidates.length) {
-      for (let i = 0; i < Math.min(3, candidates.length); i++) {
-        if (candidates[i].score >= 0.70 && MT.sameChord(expected, candidates[i].name)) {
-          matched = true;
-          break;
-        }
-      }
-    }
-
-    let skip = 0;
-    if (!matched && progressIdx + 1 < songChords.length) {
-      if (MT.sameChord(songChords[progressIdx + 1], detectedName)) {
-        matched = true;
-        skip = 1;
-      }
-    }
-
-    if (!matched) return false;
-
-    if (skip > 0) {
-      played.push(songChords[progressIdx]);
-      progressIdx += skip;
-    }
+    // Strict match against expected only (no lookahead to progressIdx + 1)
+    if (!isOnset) return false;
+    if (!MT.sameChord(expected, detectedName)) return false;
 
     played.push(songChords[progressIdx]);
     progressIdx++;
@@ -52,21 +30,31 @@ test('chord-sync sequential and tolerance advance logic simulation', () => {
   }
 
   // 1. Play first chord correctly
-  assert.equal(tryAdvance('Am', [], true), true);
+  assert.equal(tryAdvance('Am', true), true);
   assert.equal(progressIdx, 1);
   assert.deepEqual(played, ['Am']);
 
   // 2. Play wrong chord -> does not advance
-  assert.equal(tryAdvance('G', [], true), false);
+  assert.equal(tryAdvance('G', true), false);
   assert.equal(progressIdx, 1);
 
-  // 3. Play chord with runner-up candidate match -> advances
-  assert.equal(tryAdvance('Cmaj7', [{ name: 'C', score: 0.85 }], true), true);
+  // 3. Play next chord correctly -> advances exactly 1 step
+  assert.equal(tryAdvance('C', true), true);
   assert.equal(progressIdx, 2);
   assert.deepEqual(played, ['Am', 'C']);
 
-  // 4. Lookahead tolerance: user played D instead of Em -> skips Em and catches up
-  assert.equal(tryAdvance('D', [], true), true);
+  // 4. Strictness: user played D instead of Em -> MUST NOT skip Em!
+  assert.equal(tryAdvance('D', true), false);
+  assert.equal(progressIdx, 2, 'Must remain on Em and not skip ahead');
+  assert.deepEqual(played, ['Am', 'C']);
+
+  // 5. Playing Em correctly now advances to 3
+  assert.equal(tryAdvance('Em', true), true);
+  assert.equal(progressIdx, 3);
+  assert.deepEqual(played, ['Am', 'C', 'Em']);
+
+  // 6. Playing D advances to end
+  assert.equal(tryAdvance('D', true), true);
   assert.equal(progressIdx, 4);
   assert.deepEqual(played, ['Am', 'C', 'Em', 'D']);
 });

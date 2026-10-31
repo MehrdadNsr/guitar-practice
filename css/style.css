@@ -448,6 +448,173 @@ kbd {
 .detector.minimized .det-body > :not(.det-main) { display: none; }
 .detector.min .det-chord,
 .detector.minimized .det-chord { font-size: 1.8rem; }
+.detector.debug-open {
+  width: 360px;
+}
+
+/* Pill button */
+.pill-btn {
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.pill-btn:hover { background: var(--hover); }
+.pill-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* Strictness radio selector */
+.setting-row { margin: 8px 0; }
+.strictness-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.strictness-radios label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+/* Debug panel */
+.dbg-panel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 0.78rem;
+}
+.dbg-section { margin-bottom: 10px; }
+.dbg-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dbg-fsm-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: var(--line);
+  color: var(--fg);
+}
+.dbg-fsm-badge.state-waiting { background: #64748b; color: #fff; }
+.dbg-fsm-badge.state-evaluating { background: #0284c7; color: #fff; animation: pulse 0.8s infinite; }
+.dbg-fsm-badge.state-accepted { background: #16a34a; color: #fff; }
+.dbg-fsm-badge.state-lockout { background: #d97706; color: #fff; }
+
+.dbg-strum-led {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  transition: all 0.1s;
+}
+.dbg-strum-led.active {
+  background: #22c55e;
+  color: #fff;
+  border-color: #16a34a;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.7);
+  transform: scale(1.06);
+}
+
+.dbg-target-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.dbg-chord-row {
+  display: flex;
+  justify-content: space-around;
+  text-align: center;
+  margin-bottom: 6px;
+}
+.dbg-chord-row small { display: block; color: var(--muted); font-size: 0.68rem; }
+.dbg-chord { font-size: 1.4rem; color: var(--chord); }
+.dbg-meter-box { margin-top: 4px; }
+.dbg-meter-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.dbg-meter {
+  position: relative;
+  height: 8px;
+  background: var(--line);
+  border-radius: 4px;
+}
+.meter-threshold-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--danger);
+  z-index: 2;
+}
+.dbg-reason-text {
+  margin-top: 6px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-height: 1.4em;
+  text-align: center;
+}
+
+.dbg-tools-title { font-weight: 600; font-size: 0.74rem; color: var(--muted); margin-bottom: 4px; }
+.dbg-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.dbg-btn-row button { font-size: 0.72rem; padding: 4px 8px; }
+
+.dbg-log-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.dbg-log {
+  max-height: 130px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dbg-log-item {
+  border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+  padding-bottom: 2px;
+}
+.dbg-log-item:last-child { border-bottom: none; }
+.dbg-log-item.advance { color: #16a34a; }
+.dbg-log-item.reject { color: #dc2626; }
+.dbg-log-item.lockout { color: #d97706; }
 
 /* ------------------------------------------------------ chord popover */
 

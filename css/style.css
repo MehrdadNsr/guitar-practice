@@ -231,6 +231,13 @@ main {
   box-shadow: inset 4px 0 0 var(--hl-edge);
 }
 .sheet[dir="rtl"] .line.active { box-shadow: inset -4px 0 0 var(--hl-edge); }
+.line.chord-hit {
+  animation: chordHit 0.4s ease-out;
+}
+@keyframes chordHit {
+  0% { background: color-mix(in srgb, var(--match) 40%, transparent); }
+  100% { background: transparent; }
+}
 
 /* A word group never wraps internally, so a chord stays on its word. */
 .wg { display: inline-block; white-space: nowrap; vertical-align: bottom; }

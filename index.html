@@ -124,12 +124,16 @@
         <div class="det-alt mono" id="detAlt" dir="ltr"></div>
       </div>
     </div>
+    <label class="mode-toggle" title="بدون فیلتر آهنگ: همهٔ ۲۴ آکورد ماژور و مینور">
+      <input type="checkbox" id="unrestricted">
+      <span>حالت آزاد — همهٔ آکوردهای ماژور و مینور</span>
+    </label>
+    <div class="det-cands" id="detCands" dir="ltr" aria-label="محتمل‌ترین آکوردها"></div>
     <div class="chroma" id="chroma" dir="ltr" aria-hidden="true"></div>
     <div class="level" title="بلندی صدا و آستانه"><div class="level-fill" id="levelFill"></div><div class="level-gate" id="levelGate"></div></div>
     <div class="det-history mono" id="detHistory" dir="ltr" aria-label="آکوردهای اخیر"></div>
     <details class="det-settings">
       <summary>تنظیمات تشخیص</summary>
-      <label class="check"><input type="checkbox" id="songOnly" checked> فقط آکوردهای همین آهنگ (دقیق‌تر)</label>
       <label class="slider wide"><span class="tool-label">حساسیت</span><input type="range" id="sensitivity" min="0" max="100" step="1" value="55"></label>
       <div class="det-actions">
         <button type="button" id="useMicBtn">🎤 میکروفون</button>

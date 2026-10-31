@@ -106,3 +106,50 @@ test('harmonic subtraction removes a 3rd harmonic that is not a chord tone', () 
   assert.equal(notes.length, 1);
   assert.ok(Math.abs(notes[0].freq - f0) < 0.01);
 });
+
+// ------------------------------------------------ unrestricted (24 triads)
+
+function trackFree(signal) {
+  const tr = new CD.ChordTracker({ unknownBelow: 0.3, sustainActiveMs: Infinity });
+  tr.setVocabulary(CD.allTriadNames(false));
+  return S.runTracker(tr, signal, SR, { hopMs: 40 });
+}
+
+test('allTriadNames lists the 24 major and minor chords', () => {
+  const names = CD.allTriadNames(false);
+  assert.equal(names.length, 24);
+  assert.ok(names.includes('F#m') && names.includes('C') && names.includes('A#'));
+  assert.ok(CD.allTriadNames(true).includes('Bbm'));
+});
+
+test('unrestricted mode names chords outside the song and rarely says unknown', () => {
+  const chords = ['Am', 'C', 'Em', 'D', 'G', 'Bm', 'F', 'C#m'];
+  const sig = S.renderProgression(SR, S.mulberry32(11), chords, { per: 1.6, pluckPos: 0.2 });
+  const frames = trackFree(sig);
+  assert.ok(accuracy(frames, chords, 1.6, 0.3) >= 0.9);
+  const open = frames.filter((f) => f.result.gateOpen);
+  assert.ok(open.filter((f) => f.result.unknown).length / open.length < 0.05);
+  const top = open[open.length - 1].result.candidates;
+  assert.ok(top.length >= 3 && top.every((c) => c.confidence >= 0 && c.confidence <= 1));
+});
+
+test('unrestricted mode reports speech-like sound mostly as unknown', () => {
+  // Gliding harmonic "voice" with formants and syllable envelope.
+  const rand = S.mulberry32(12);
+  const sp = new Float64Array(SR * 4);
+  let ph = 0;
+  for (let i = 0; i < sp.length; i++) {
+    const t = i / SR;
+    const syl = Math.max(0, Math.sin(Math.PI * ((t * 4) % 1)));
+    const f0 = 120 + 30 * Math.sin(2 * Math.PI * 0.7 * t) + 15 * Math.sin(2 * Math.PI * 3.1 * t);
+    ph += (2 * Math.PI * f0) / SR;
+    let v = 0;
+    for (let h = 1; h < 25; h++) {
+      const f = h * f0;
+      v += (Math.sin(h * ph) * (Math.exp(-(((f - 700) / 250) ** 2)) + 0.6 * Math.exp(-(((f - 1200) / 300) ** 2)) + 0.3)) / h;
+    }
+    sp[i] = 0.05 * v * syl + 0.002 * (rand() * 2 - 1);
+  }
+  const open = trackFree(sp).filter((f) => f.result.gateOpen);
+  assert.ok(open.filter((f) => f.result.unknown).length / open.length >= 0.5);
+});

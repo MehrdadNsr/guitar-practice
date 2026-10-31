@@ -80,6 +80,8 @@
     bassMissPenalty: 0.05,
     complexityPenalty: 0.045,
     preferredBonus: 0.03,
+    unknownBelow: null,     // if set, flag 'unknown' when the best score is lower
+    freshMs: 1000,          // candidates older than this are not current
     bassMinHz: 65,
     bassMaxHz: 340,
   };
@@ -401,6 +403,15 @@
     return ranked;
   }
 
+  /** The 24 major and minor triads, spelled with sharps or flats. */
+  function allTriadNames(preferFlats) {
+    const out = [];
+    for (let r = 0; r < 12; r++) {
+      out.push(MT.chordName(r, 'maj', preferFlats), MT.chordName(r, 'min', preferFlats));
+    }
+    return out;
+  }
+
   // -------------------------------------------------------------- tracker
 
   class ChordTracker {
@@ -436,6 +447,16 @@
       this.history = [];
     }
 
+    /** Overrides detector options at runtime (e.g. { sustainActiveMs }). */
+    setOptions(opts) {
+      Object.assign(this.opts, opts || {});
+    }
+
+    /** Score under which results are reported as unknown (null = never). */
+    setUnknownThreshold(score) {
+      this.opts.unknownBelow = typeof score === 'number' ? score : null;
+    }
+
     setSensitivity(gateDbfs) {
       this.opts.gateDbfs = gateDbfs;
     }
@@ -456,6 +477,9 @@
       this.history = [];
       this.display = { name: null, score: 0, since: 0, active: false };
       this.last = null;
+      this.lastAt = -Infinity;
+      this.prevRaw = null;
+      this.stability = 1;
     }
 
     /**
@@ -598,6 +622,24 @@
       const bass = this.gateOpen ? estimateBass(a.peaks, frame.lowTime, frame.sampleRate, this.tuning, o) : null;
       const loud = Number.isFinite(level) ? Math.pow(10, level / 20) : 0;
 
+      // Tonal stability: how similar this frame's pitch content is to the
+      // previous one. Held notes and chords stay near 1; speech glides
+      // between pitches every few frames, so its confidence is scaled down.
+      if (this.gateOpen) {
+        if (this.prevRaw) {
+          let d = 0;
+          let n1 = 0;
+          let n2 = 0;
+          for (let i = 0; i < 12; i++) { d += raw[i] * this.prevRaw[i]; n1 += raw[i] * raw[i]; n2 += this.prevRaw[i] * this.prevRaw[i]; }
+          const cos = n1 > 0 && n2 > 0 ? d / Math.sqrt(n1 * n2) : 0;
+          const f = Math.max(0, Math.min(1, (cos - 0.75) / 0.2));
+          this.stability += 0.3 * (f - this.stability);
+        }
+        this.prevRaw = Float64Array.from(raw);
+      } else {
+        this.prevRaw = null;
+      }
+
       // Sustained chroma: fast attack, slow release.
       for (let i = 0; i < 12; i++) {
         const v = this.gateOpen ? raw[i] : 0;
@@ -633,7 +675,18 @@
       }
 
       if (!this.gateOpen && t - this.lastLoudAt > o.releaseMs) this.display.active = false;
-      if (ranked && ranked.length) this.last = ranked.slice(0, 4);
+      if (ranked && ranked.length) {
+        this.last = ranked.slice(0, 4);
+        this.lastAt = t;
+      }
+      // "Unknown": while sound is present, the freshest ranking is too weak
+      // (speech, noise, a cluster of unrelated notes) or there is none.
+      const fresh = this.last && t - this.lastAt <= o.freshMs;
+      const candidates = (this.last || []).map((c) => Object.assign({}, c, {
+        confidence: Math.max(0, Math.min(1, c.score)) * this.stability,
+      }));
+      const unknown = o.unknownBelow !== null && this.gateOpen &&
+        (!fresh || candidates[0].confidence < o.unknownBelow);
 
       let max = 0;
       for (let i = 0; i < 12; i++) max = Math.max(max, this.sustain[i]);
@@ -643,7 +696,9 @@
         chord: this.display.name,
         score: this.display.score,
         active: this.display.active,
-        candidates: this.last || [],
+        candidates,
+        stability: this.stability,
+        unknown,
         chroma: viz,
         levelDb: level,
         threshold,
@@ -684,6 +739,7 @@
     estimateBass,
     buildTemplates,
     rankTemplates,
+    allTriadNames,
     ChordTracker,
   };
 

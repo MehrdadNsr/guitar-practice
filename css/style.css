@@ -352,6 +352,20 @@ kbd {
 .det-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .file-btn { display: inline-flex; align-items: center; }
 .hint { color: var(--muted); font-size: 0.76rem; margin: 6px 0 0; }
+/* Restricted / unrestricted toggle and the candidate bars (unrestricted). */
+.mode-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; margin: 4px 0 2px; cursor: pointer; }
+.mode-toggle input { accent-color: var(--accent-2); }
+.det-cands { display: none; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 4px 0 2px; }
+.detector.unrestricted .det-cands { display: grid; }
+.detector.unrestricted .det-alt { display: none; }
+.cand { border: 1px solid var(--line); border-radius: 8px; padding: 3px 4px 4px; text-align: center; font-family: var(--mono); background: var(--bg); transition: opacity 0.15s; }
+.cand b { display: block; font-size: 0.95rem; color: var(--chord); line-height: 1.2; }
+.cand small { display: block; font-size: 0.66rem; color: var(--muted); }
+.cand .cbar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 2px; }
+.cand .cbar i { display: block; height: 100%; background: var(--accent-2); transition: width 0.1s linear; }
+.cand.top { border-color: var(--accent-2); }
+.cand.weak { opacity: 0.45; }
+.det-chord.unknown { font-size: 1.5rem; color: var(--muted); }
 .detector.min .det-body > :not(.det-main) { display: none; }
 .detector.min .det-chord { font-size: 1.8rem; }
 

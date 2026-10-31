@@ -131,6 +131,26 @@ async function alignment(page) {
     check('microphone detection follows Am C Em D', /^Am C Em D Am/.test(seq), seq);
     await page.click('#detClose');
 
+    // Unrestricted mode: off by default, persisted, shows 4 candidates.
+    check('restricted (song) mode is the default', !(await page.isChecked('#unrestricted')));
+    await page.click('#micBtn');
+    await page.check('#unrestricted');
+    await page.reload();
+    await page.waitForTimeout(400);
+    check('unrestricted toggle survives a reload', await page.isChecked('#unrestricted'));
+    await page.click('#micBtn');
+    const freeSeen = new Set();
+    let cells = 0;
+    for (let i = 0; i < 60; i++) {
+      freeSeen.add(await page.textContent('#detChord'));
+      cells = Math.max(cells, await page.$$eval('#detCands .cand b', (n) => n.filter((x) => x.textContent !== '·').length));
+      await page.waitForTimeout(100);
+    }
+    check('unrestricted mode shows 3-4 candidates side by side', cells >= 3, `${cells} candidates`);
+    check('unrestricted mode still detects the played chords', ['Am', 'C', 'Em', 'D'].filter((c) => freeSeen.has(c)).length >= 3, [...freeSeen].join(' '));
+    await page.click('#detClose');
+    await page.uncheck('#unrestricted');
+
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
     phone.on('pageerror', (e) => errors.push(e.message));
     await phone.goto(url + '#song=haunted');

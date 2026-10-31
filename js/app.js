@@ -32,7 +32,7 @@
   }
 
   const settings = Object.assign(
-    { theme: null, zoom: 1, songId: null, songs: {}, songOnly: true, sensitivity: 55 },
+    { theme: null, zoom: 1, songId: null, songs: {}, unrestricted: false, sensitivity: 55 },
     readJSON(SETTINGS_KEY, {})
   );
   let saveTimer = 0;
@@ -529,7 +529,7 @@
   const det = {
     chord: $('detChord'), status: $('detStatus'), dot: $('detDot'), conf: $('detConf'), sub: $('detSub'),
     alt: $('detAlt'), level: $('levelFill'), gate: $('levelGate'), history: $('detHistory'),
-    songOnly: $('songOnly'), sens: $('sensitivity'), file: $('audioFile'), useMic: $('useMicBtn'),
+    unrestricted: $('unrestricted'), cands: $('detCands'), sens: $('sensitivity'), file: $('audioFile'), useMic: $('useMicBtn'),
     close: $('detClose'), min: $('detMin'),
   };
   let lastShown = null;
@@ -554,10 +554,45 @@
 
   function sensToGate(s) { return -30 - 0.45 * s; } // 0..100 -> -30..-75 dBFS
 
+  // Unrestricted mode: below this confidence (0..1) the panel says "unknown"
+  // instead of guessing (speech, noise, unrelated note clusters).
+  const UNKNOWN_BELOW = 0.3;
+
+  function isUnrestricted() { return det.unrestricted.checked; }
+
+  /**
+   * Restricted (default): only the current song's chords, in the current key.
+   * Unrestricted: all 24 major/minor triads, ranking kept live even without
+   * a fresh strum (so a sung or held note can move between chords), and weak
+   * results reported as unknown.
+   */
   function updateVocabulary() {
     if (!state.song) return;
-    if (det.songOnly.checked && state.chords.length) tracker.setVocabulary(state.chords, null, state.preferFlats);
-    else tracker.setVocabulary(null, state.chords, state.preferFlats);
+    const free = isUnrestricted();
+    el.detector.classList.toggle('unrestricted', free);
+    if (free) {
+      tracker.setVocabulary(CD.allTriadNames(state.preferFlats), null, state.preferFlats);
+      tracker.setOptions({ sustainActiveMs: Infinity });
+      tracker.setUnknownThreshold(UNKNOWN_BELOW);
+    } else {
+      if (state.chords.length) tracker.setVocabulary(state.chords, null, state.preferFlats);
+      else tracker.setVocabulary(null, null, state.preferFlats);
+      tracker.setOptions({ sustainActiveMs: CD.DEFAULTS.sustainActiveMs });
+      tracker.setUnknownThreshold(null);
+    }
+  }
+
+  function renderCandidates(r) {
+    const list = r.gateOpen ? r.candidates.slice(0, 4) : [];
+    let html = '';
+    for (let i = 0; i < 4; i++) {
+      const c = list[i];
+      if (!c) { html += '<div class="cand weak"><b>·</b><div class="cbar"><i style="width:0"></i></div><small>&nbsp;</small></div>'; continue; }
+      const pct = Math.round(c.confidence * 100);
+      const cls = 'cand' + (i === 0 && !r.unknown ? ' top' : '') + (c.confidence < UNKNOWN_BELOW ? ' weak' : '');
+      html += `<div class="${cls}"><b>${esc(c.name)}</b><div class="cbar"><i style="width:${pct}%"></i></div><small>${pct}%</small></div>`;
+    }
+    det.cands.innerHTML = html;
   }
 
   function setDetStatus(text, live) {
@@ -630,11 +665,16 @@
       wakeLock.update();
       return;
     }
-    // Chord name
-    const name = r.chord;
-    if (name !== lastShown) {
-      lastShown = name;
-      det.chord.textContent = name || '—';
+    // Chord name ("unknown" in unrestricted mode when nothing is convincing)
+    const free = isUnrestricted();
+    const unknown = free && r.unknown;
+    const name = unknown ? null : r.chord;
+    const shownKey = unknown ? '?unknown' : name;
+    det.chord.classList.toggle('unknown', unknown);
+    if (shownKey !== lastShown) {
+      lastShown = shownKey;
+      det.chord.textContent = unknown ? 'unknown' : name || '—';
+      det.chord.title = unknown ? 'نامشخص — صدا به هیچ آکوردی شبیه نیست' : '';
       det.chord.classList.remove('bump');
       void det.chord.offsetWidth; // restart the bump animation
       if (name) {
@@ -648,7 +688,9 @@
       renderHistory();
     }
     det.chord.classList.toggle('stale', !r.active);
-    det.conf.style.width = (name && r.active ? clamp(r.score, 0, 1) * 100 : 0) + '%';
+    const topConf = free && r.candidates[0] ? r.candidates[0].confidence : clamp(r.score, 0, 1);
+    det.conf.style.width = (name && r.active ? topConf * 100 : 0) + '%';
+    if (free) renderCandidates(r);
     setDetStatus(STATUS_TEXT[r.status] || '', true);
 
     const parts = [];
@@ -884,11 +926,13 @@
     det.min.textContent = el.detector.classList.contains('min') ? '▴' : '▾';
     measureSoon();
   });
-  det.songOnly.checked = settings.songOnly !== false;
-  det.songOnly.addEventListener('change', () => {
-    settings.songOnly = det.songOnly.checked;
+  det.unrestricted.checked = settings.unrestricted === true;
+  det.unrestricted.addEventListener('change', () => {
+    settings.unrestricted = det.unrestricted.checked;
     saveSettings();
     updateVocabulary();
+    det.cands.innerHTML = '';
+    lastShown = undefined;
   });
   det.sens.value = settings.sensitivity;
   det.sens.addEventListener('input', () => {

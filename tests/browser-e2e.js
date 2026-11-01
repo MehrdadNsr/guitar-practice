@@ -133,12 +133,19 @@ async function alignment(page) {
 
     // Unrestricted mode: off by default, persisted, shows 4 candidates.
     check('restricted (song) mode is the default', !(await page.isChecked('#unrestricted')));
-    await page.click('#micBtn');
+    const openPanel = async () => {
+      // The mic button toggles practice mode; it may need two clicks after #detClose.
+      for (let i = 0; i < 2 && (await page.evaluate(() => document.getElementById('detector').hidden)); i++) {
+        await page.click('#micBtn');
+        await page.waitForTimeout(300);
+      }
+    };
+    await openPanel();
     await page.check('#unrestricted');
     await page.reload();
     await page.waitForTimeout(400);
     check('unrestricted toggle survives a reload', await page.isChecked('#unrestricted'));
-    await page.click('#micBtn');
+    await openPanel();
     const freeSeen = new Set();
     let cells = 0;
     for (let i = 0; i < 60; i++) {
@@ -149,25 +156,26 @@ async function alignment(page) {
     check('unrestricted mode shows 3-4 candidates side by side', cells >= 3, `${cells} candidates`);
     check('unrestricted mode still detects the played chords', ['Am', 'C', 'Em', 'D'].filter((c) => freeSeen.has(c)).length >= 3, [...freeSeen].join(' '));
     await page.uncheck('#unrestricted');
-    await page.click('#detClose');
+    if (await page.evaluate(() => GP.app.state.practiceMode)) await page.click('#micBtn');
 
-    // Chord-synced scroll: the page moves only as chords are played.
+    // Chord-synced scroll (practice mode): the page moves only as chords are played.
     await page.evaluate(() => scrollTo(0, 0));
     await page.waitForTimeout(200);
-    await page.click('#followBtn');
-    const expectFirst = await page.textContent('.cd b.expect');
+    if (!(await page.evaluate(() => GP.app.state.practiceMode))) await page.click('#micBtn');
+    await page.waitForTimeout(300);
+    const expectFirst = await page.textContent('.cd b.current-chord').catch(() => null);
+    const prog = [];
     const ys = [];
-    let expected = [];
-    // The intro's four chords share line 0, so play long enough to reach line 1+.
     for (let i = 0; i < 26; i++) {
       await page.waitForTimeout(500);
+      prog.push(await page.evaluate(() => GP.app.state.progressIdx));
       ys.push(Math.round(await page.evaluate(() => scrollY)));
-      expected.push(await page.evaluate(() => GP.app.follower.next));
     }
-    check('follow mode waits on a pulsing expected chord', Boolean(expectFirst), expectFirst);
-    check('follow mode advances through the song with the played chords', expected[expected.length - 1] >= 5 && ys[ys.length - 1] > ys[0], `next ${expected.join(',')} | y ${ys.join(',')}`);
-    await page.click('#followBtn');
-    await page.click('#detClose');
+    check('chord-synced scroll waits on a highlighted expected chord', Boolean(expectFirst), expectFirst);
+    check('chord-synced scroll advances with the played chords', prog[prog.length - 1] >= 5 && ys[ys.length - 1] > ys[0], `progress ${prog.join(',')} | y ${ys.join(',')}`);
+    const win = await page.$$eval('.cd b.window', (n) => n.length);
+    check('tolerance window is marked on the next chords', win > 0, `${win} chords`);
+    await page.click('#micBtn');
 
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
     phone.on('pageerror', (e) => errors.push(e.message));

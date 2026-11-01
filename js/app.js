@@ -14,7 +14,7 @@
   const AE = GP.Audio;
 
   const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const esc = (s) => String(s).replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
   // ----------------------------------------------------------- settings
@@ -75,11 +75,10 @@
     activeIdx: -1,
     focusY: 0,
     detected: null,
+    progressIdx: 0,          // next expected chord index in the full sequence
+    playedSet: new Set(),    // chords already successfully played in this session
+    practiceMode: false,
   };
-
-  // Chord-synced scroll state (see js/chord-follower.js).
-  const follower = new GP.ChordFollower.ChordFollower([]);
-  const follow = { on: false, anim: 0 };
 
   const el = {
     appbar: $('appbar'), toolbar: $('toolbar'), songSelect: $('songSelect'),
@@ -87,9 +86,11 @@
     transDown: $('transDown'), transUp: $('transUp'), keyOut: $('keyOut'),
     zoomInBtn: $('zoomInBtn'), zoomOutBtn: $('zoomOutBtn'), zoomOut: $('zoomOut'),
     metroBtn: $('metroBtn'), bpm: $('bpm'), bpmDown: $('bpmDown'), bpmUp: $('bpmUp'), tapBtn: $('tapBtn'), beats: $('beats'),
-    micBtn: $('micBtn'), followBtn: $('followBtn'), themeBtn: $('themeBtn'), fsBtn: $('fsBtn'), moreBtn: $('moreBtn'), addSongBtn: $('addSongBtn'),
+    micBtn: $('micBtn'), themeBtn: $('themeBtn'), fsBtn: $('fsBtn'), moreBtn: $('moreBtn'), addSongBtn: $('addSongBtn'),
     title: $('songTitle'), meta: $('songMeta'), strip: $('chordStrip'), sheet: $('sheet'), topSpacer: $('topSpacer'),
     focusLine: $('focusLine'), detector: $('detector'), pop: $('chordPop'), toast: $('toast'),
+    practiceBar: $('practiceBar'), pTargetChord: $('pTargetChord'), pNextChord: $('pNextChord'),
+    pCount: $('pCount'), pPrevBtn: $('pPrevBtn'), pNextBtn: $('pNextBtn'), pRestartBtn: $('pRestartBtn'),
   };
 
   // -------------------------------------------------------------- toast
@@ -142,6 +143,8 @@
       return;
     }
     scroller.stop();
+    state.progressIdx = 0;
+    state.playedSet.clear();
     state.song = song;
     state.parsed = SP.parseSong(song.body);
     const prefs = songPrefs(song.id);
@@ -161,7 +164,6 @@
     }
     document.title = song.title + ' — تمرین گیتار';
     saveSettings();
-    follower.next = 0; // a new song starts waiting for its first chord
     render();
     window.scrollTo(0, 0);
   }
@@ -293,13 +295,98 @@
     el.sheet.innerHTML = out.join('');
     state.lineEls = Array.from(el.sheet.querySelectorAll('.line'));
     state.activeIdx = -1;
-    // Flat chord sequence in reading order, for chord-synced scrolling.
-    state.events = [];
-    state.lineEls.forEach((ln, i) => {
-      ln.querySelectorAll('.cd b').forEach((b) => state.events.push({ line: i, chord: b.dataset.c, el: b }));
+    resetChordProgress();
+  }
+
+  function resetChordProgress() {
+    state.progressIdx = 0;
+    lastFollowChord = null;
+    lastVotedChord = undefined;
+    state.playedSet.clear();
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    chordEls.forEach((b) => {
+      b.classList.remove('done', 'current-chord', 'just-hit', 'match', 'hit');
     });
-    follower.setEvents(state.events);
-    renderFollowMarks();
+    if (typeof follower !== 'undefined' && follower) follower.reset();
+    updateCurrentChordHighlight();
+  }
+
+  function updateCurrentChordHighlight() {
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    const total = chordEls.length;
+    const win = state.practiceMode ? toleranceWindow(chordEls) : [];
+    chordEls.forEach((b, i) => {
+      b.classList.toggle('done', i < state.progressIdx);
+      b.classList.toggle('current-chord', state.practiceMode && i === state.progressIdx);
+      b.classList.toggle('window', i !== state.progressIdx && win.includes(i));
+    });
+
+    const current = chordEls[state.progressIdx];
+    if (typeof follower !== 'undefined' && follower) {
+      follower.setTarget(current ? current.dataset.c : null);
+    }
+
+    if (state.practiceMode && el.practiceBar) {
+      el.practiceBar.hidden = false;
+      const next = chordEls[state.progressIdx + 1];
+      if (current) {
+        el.pTargetChord.textContent = current.dataset.c;
+        el.pNextChord.textContent = next ? `➔ بعدی: ${next.dataset.c}` : '➔ پایان آهنگ';
+        el.pCount.textContent = `(${state.progressIdx + 1} از ${total})`;
+      } else {
+        el.pTargetChord.textContent = '🎉';
+        el.pNextChord.textContent = 'پایان آهنگ';
+        el.pCount.textContent = `(${total} از ${total})`;
+      }
+    } else if (el.practiceBar) {
+      el.practiceBar.hidden = true;
+    }
+
+    updateStripCurrent();
+  }
+
+  function advanceChord(delta = 1) {
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    if (!chordEls.length) return;
+
+    if (delta > 0 && state.progressIdx < chordEls.length) {
+      const currentEl = chordEls[state.progressIdx];
+      currentEl.classList.remove('current-chord');
+      currentEl.classList.add('done', 'just-hit');
+      setTimeout(() => currentEl.classList.remove('just-hit'), 400);
+    }
+
+    const prevIdx = state.progressIdx;
+    state.progressIdx = Math.max(0, Math.min(chordEls.length, state.progressIdx + delta));
+
+    if (state.progressIdx < chordEls.length) {
+      const nextEl = chordEls[state.progressIdx];
+      const nextLine = nextEl.closest('.line');
+      if (nextLine) {
+        const nextLineIdx = state.lineEls.indexOf(nextLine);
+        // Only scroll if we moved to a different line!
+        const prevEl = chordEls[prevIdx];
+        const prevLine = prevEl ? prevEl.closest('.line') : null;
+        if (nextLine !== prevLine && nextLineIdx >= 0) {
+          const targetY = state.lineCenters[nextLineIdx] - state.focusY;
+          window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
+          nextLine.classList.add("chord-hit");
+          setTimeout(() => nextLine.classList.remove("chord-hit"), 400);
+        }
+      }
+    } else {
+      toast("آهنگ تمام شد 🎉");
+    }
+
+    updateCurrentChordHighlight();
+  }
+
+  function updateStripCurrent() {
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    const expected = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+    el.strip.querySelectorAll('.diagram').forEach((d) => {
+      d.classList.toggle('current-chord', state.practiceMode && !!expected && MT.sameChord(d.dataset.c, expected));
+    });
   }
 
   // ------------------------------------------- layout + centre highlight
@@ -388,7 +475,6 @@
     raf: 0,
     start() {
       if (this.playing) return;
-      if (follow.on) setFollow(false); // timer and chord-follow are exclusive
       if (this.atEnd()) window.scrollTo(0, 0);
       this.playing = true;
       this.pos = window.scrollY;
@@ -399,6 +485,9 @@
       el.playBtn.querySelector('.lbl').textContent = 'توقف';
       el.playBtn.setAttribute('aria-pressed', 'true');
       el.focusLine.classList.add('show');
+      if (listener.active) {
+        updateCurrentChordHighlight();
+      }
       wakeLock.update();
     },
     stop() {
@@ -408,7 +497,7 @@
       el.playBtn.querySelector('.ico').textContent = '▶';
       el.playBtn.querySelector('.lbl').textContent = 'اسکرول';
       el.playBtn.setAttribute('aria-pressed', 'false');
-      el.focusLine.classList.remove('show');
+      if (!listener.active) el.focusLine.classList.remove('show');
       wakeLock.update();
     },
     toggle() { if (this.playing) this.stop(); else this.start(); },
@@ -424,6 +513,14 @@
       this.last = ts;
       // The reader grabbed the page: continue from where they left it.
       if (Math.abs(window.scrollY - this.lastSet) > 3) this.pos = window.scrollY;
+
+      // In chord-sync practice mode (when mic is listening), movement is driven by guitar chords
+      if (listener.active || state.practiceMode) {
+        this.lastSet = window.scrollY;
+        this.raf = requestAnimationFrame((t) => this.step(t));
+        return;
+      }
+
       this.pos += (speedPx(+el.speed.value) * dt) / 1000;
       const end = this.endY();
       if (this.pos >= end) {
@@ -437,13 +534,10 @@
       this.raf = requestAnimationFrame((t) => this.step(t));
     },
     restart() {
-      if (follow.on) {
-        follower.resetToLine(0);
-        renderFollowMarks();
-      }
       window.scrollTo(0, 0);
       this.pos = 0;
       this.lastSet = window.scrollY;
+      resetChordProgress();
       updateActive(true);
     },
   };
@@ -491,6 +585,13 @@
   // ------------------------------------------------------------ metronome
 
   const metronome = new AE.Metronome();
+  metronome.onBeat = (beatIdx, isAccent) => {
+    const dots = Array.from(el.beats.children);
+    dots.forEach((dot, idx) => {
+      dot.classList.toggle('on', idx === beatIdx);
+      dot.classList.toggle('accent', idx === beatIdx && isAccent);
+    });
+  };
   const tapper = new AE.TapTempo();
 
   function renderBeatDots(n) {
@@ -506,15 +607,6 @@
       saveSettings();
     }
   }
-
-  metronome.onBeat = (beat, accent) => {
-    const dots = el.beats.children;
-    for (let i = 0; i < dots.length; i++) dots[i].classList.remove('on', 'accent');
-    if (dots[beat]) {
-      dots[beat].classList.add('on');
-      if (accent) dots[beat].classList.add('accent');
-    }
-  };
 
   async function toggleMetronome() {
     if (metronome.running) {
@@ -534,7 +626,10 @@
   // ------------------------------------------------------ chord detector
 
   const tracker = new CD.ChordTracker();
+  const follower = new CD.SongFollower(tracker, { strictness: settings.strictness || 'strict' });
   const listener = new AE.ChordListener(tracker, onDetect);
+  const recorder = new AE.AudioRecorder();
+  let recordedBlob = null;
   const NOTE_NAMES = MT.SHARP_NAMES;
   const chromaBars = [];
   (function buildChroma() {
@@ -548,6 +643,12 @@
     alt: $('detAlt'), level: $('levelFill'), gate: $('levelGate'), history: $('detHistory'),
     unrestricted: $('unrestricted'), cands: $('detCands'), sens: $('sensitivity'), file: $('audioFile'), useMic: $('useMicBtn'),
     close: $('detClose'), min: $('detMin'),
+    dbgToggle: $('dbgToggleBtn'), dbgPanel: $('dbgPanel'), fsmBadge: $('dbgFsmBadge'), strumLed: $('dbgStrumLed'),
+    targetVal: $('dbgTargetVal'), bestVal: $('dbgBestVal'), targetScoreNum: $('dbgTargetScoreNum'),
+    threshNum: $('dbgThreshNum'), targetScoreFill: $('dbgTargetScoreFill'), targetThreshLine: $('dbgTargetThreshLine'),
+    liveReason: $('dbgLiveReason'), recordBtn: $('dbgRecordBtn'), playRecordBtn: $('dbgPlayRecordBtn'),
+    recordTimer: $('dbgRecordTimer'), testSeqBtn: $('dbgTestSeqBtn'), testRingingBtn: $('dbgTestRingingBtn'),
+    clearLogBtn: $('dbgClearLogBtn'), logList: $('dbgLogList'),
   };
   let lastShown = null;
   let historyList = [];
@@ -575,13 +676,12 @@
   // instead of guessing (speech, noise, unrelated note clusters).
   const UNKNOWN_BELOW = 0.3;
 
-  function isUnrestricted() { return det.unrestricted.checked; }
+  function isUnrestricted() { return Boolean(det.unrestricted && det.unrestricted.checked); }
 
   /**
    * Restricted (default): only the current song's chords, in the current key.
-   * Unrestricted: all 24 major/minor triads, ranking kept live even without
-   * a fresh strum (so a sung or held note can move between chords), and weak
-   * results reported as unknown.
+   * Unrestricted: all 24 major/minor triads, ranking kept live even without a
+   * fresh strum, and weak results reported as unknown.
    */
   function updateVocabulary() {
     if (!state.song) return;
@@ -605,8 +705,9 @@
     for (let i = 0; i < 4; i++) {
       const c = list[i];
       if (!c) { html += '<div class="cand weak"><b>·</b><div class="cbar"><i style="width:0"></i></div><small>&nbsp;</small></div>'; continue; }
-      const pct = Math.round(c.confidence * 100);
-      const cls = 'cand' + (i === 0 && !r.unknown ? ' top' : '') + (c.confidence < UNKNOWN_BELOW ? ' weak' : '');
+      const conf = typeof c.confidence === 'number' ? c.confidence : clamp(c.score, 0, 1);
+      const pct = Math.round(conf * 100);
+      const cls = 'cand' + (i === 0 && !r.unknown ? ' top' : '') + (conf < UNKNOWN_BELOW ? ' weak' : '');
       html += `<div class="${cls}"><b>${esc(c.name)}</b><div class="cbar"><i style="width:${pct}%"></i></div><small>${pct}%</small></div>`;
     }
     det.cands.innerHTML = html;
@@ -614,7 +715,7 @@
 
   function setDetStatus(text, live) {
     det.status.textContent = text;
-    det.dot.classList.toggle('live', Boolean(live));
+    det.dot.classList.toggle('live', !!live);
   }
 
   function showDetector(show) {
@@ -654,7 +755,6 @@
   }
 
   function stopListening(hide) {
-    if (hide && follow.on) setFollow(false);
     listener.stop();
     el.micBtn.classList.remove('on');
     setDetStatus('خاموش', false);
@@ -675,6 +775,140 @@
     det.conf.style.width = '0%';
   }
 
+  let lastStrumFlashTimeout = null;
+
+  function updateDebugView(r, fRes, target) {
+    if (!det.dbgPanel || det.dbgPanel.hidden) return;
+
+    const strictness = (follower && follower.opts && follower.opts.strictness) || 'strict';
+    const cfg = (CD.FOLLOWER_CONFIGS && CD.FOLLOWER_CONFIGS[strictness]) || { minScore: 0.60 };
+    const targetScore = fRes ? fRes.targetScore : 0;
+    const bestChord = fRes ? fRes.bestChord : (r ? r.chord : null);
+    const bestScore = fRes ? fRes.bestScore : (r ? r.score : 0);
+    const stateName = fRes ? fRes.state : 'IDLE';
+
+    // FSM State badge
+    if (det.fsmBadge) {
+      det.fsmBadge.textContent = stateName;
+      det.fsmBadge.className = 'dbg-fsm-badge ' + (
+        stateName === 'WAITING_FOR_STRUM' ? 'state-waiting' :
+        stateName === 'EVALUATING' ? 'state-evaluating' :
+        stateName === 'ACCEPTED' ? 'state-accepted' :
+        stateName === 'LOCKOUT' ? 'state-lockout' : ''
+      );
+    }
+
+    // Strum LED flash
+    if (det.strumLed && ((fRes && fRes.isOnset) || (r && r.onset))) {
+      det.strumLed.classList.add('active');
+      clearTimeout(lastStrumFlashTimeout);
+      lastStrumFlashTimeout = setTimeout(() => {
+        if (det.strumLed) det.strumLed.classList.remove('active');
+      }, 250);
+    }
+
+    // Target vs Heard
+    if (det.targetVal) det.targetVal.textContent = target || '—';
+    if (det.bestVal) det.bestVal.textContent = bestChord ? `${bestChord} (${Math.round(bestScore * 100)}٪)` : '—';
+
+    // Confidence meter & threshold mark
+    const threshPct = Math.round(cfg.minScore * 100);
+    const scorePct = Math.round(clamp(targetScore, 0, 1) * 100);
+    if (det.targetScoreNum) det.targetScoreNum.textContent = scorePct + '٪';
+    if (det.threshNum) det.threshNum.textContent = threshPct + '٪';
+    if (det.targetScoreFill) det.targetScoreFill.style.width = scorePct + '%';
+    if (det.targetThreshLine) det.targetThreshLine.style.left = threshPct + '%';
+
+    // Live reason text
+    if (det.liveReason && fRes && fRes.reason) {
+      det.liveReason.textContent = fRes.reason;
+    }
+
+    // Render decision log
+    renderDebugLog();
+  }
+
+  function renderDebugLog() {
+    if (!det.logList) return;
+    if (!follower || !follower.log || !follower.log.length) {
+      det.logList.innerHTML = '<span class="dbg-log-item">هنوز رویدادی ثبت نشده است</span>';
+      return;
+    }
+    det.logList.innerHTML = follower.log.slice(0, 15).map((d) => {
+      const cls = d.action === 'advance' ? 'advance' : (d.action === 'reject' ? 'reject' : 'lockout');
+      const timeStr = new Date(d.t).toLocaleTimeString('fa-IR', { minute: '2-digit', second: '2-digit' });
+      return `<div class="dbg-log-item ${cls}">[${timeStr}] ${esc(d.reason)}</div>`;
+    }).join('');
+  }
+
+  /*
+   * Tolerance on top of the strict step evaluator: when the detector settles
+   * on a NEW chord that is not the expected one but appears among the chords
+   * of the expected line and the next chord line, the player is a little
+   * ahead (or a change was missed) — jump there. In unrestricted mode any
+   * other new confident chord moves one chord forward. Anything else: wait.
+   */
+  let lastFollowChord = null;
+  // Last chord the detector displayed; tolerance only reacts when it changes.
+  // `undefined` = just reset: record the current reading without acting, so
+  // a chord already ringing when practice starts is not taken as a move.
+  let lastVotedChord;
+
+  function toleranceWindow(chordEls) {
+    const out = [];
+    const first = chordEls[state.progressIdx];
+    if (!first) return out;
+    const lines = [first.closest('.line')];
+    // Includes the expected chord itself: a confident change to it advances
+    // even if the strict evaluator missed that strum.
+    for (let i = state.progressIdx; i < chordEls.length && out.length < 12; i++) {
+      const ln = chordEls[i].closest('.line');
+      if (!lines.includes(ln)) {
+        if (lines.length >= 2) break;
+        lines.push(ln);
+      }
+      out.push(i);
+    }
+    return out;
+  }
+
+  function followByChordChange(r, chordEls, currentTarget) {
+    const free = isUnrestricted();
+    const name = r.chord && r.active && !(free && r.unknown) ? r.chord : null;
+    const fresh = lastVotedChord !== undefined && name !== lastVotedChord;
+    lastVotedChord = name;
+    if (!fresh || !name || (lastFollowChord && MT.sameChord(name, lastFollowChord))) return;
+    lastFollowChord = name;
+    const hit = toleranceWindow(chordEls).find((i) => MT.sameChord(chordEls[i].dataset.c, name));
+    if (hit !== undefined) advanceChord(hit - state.progressIdx + 1);
+    else if (free) advanceChord(1);
+    else return;
+    const t = chordEls[state.progressIdx];
+    follower.setTarget(t ? t.dataset.c : null);
+  }
+
+  /** Advance one chord at a time using actual DOM order of chords in the sheet. */
+  function advanceToDetectedChord(r) {
+    if (!state.practiceMode && !listener.active) return;
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    if (!chordEls.length || state.progressIdx >= chordEls.length) return;
+
+    const currentTarget = chordEls[state.progressIdx].dataset.c;
+    follower.setTarget(currentTarget);
+    const followerRes = follower.process(r);
+
+    if (followerRes && followerRes.action === 'advance') {
+      advanceChord(1); // the strict evaluator confirmed the expected chord
+      lastFollowChord = currentTarget; // a ringing chord never counts twice
+      const nextTarget = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+      follower.setTarget(nextTarget);
+    } else {
+      followByChordChange(r, chordEls, currentTarget);
+    }
+
+    updateDebugView(r, followerRes, currentTarget);
+  }
+
   function onDetect(r, err) {
     if (err) {
       el.micBtn.classList.remove('on');
@@ -683,7 +917,11 @@
       wakeLock.update();
       return;
     }
-    // Chord name ("unknown" in unrestricted mode when nothing is convincing)
+
+    // Advance chord progression on strict strum match
+    advanceToDetectedChord(r);
+
+    // General display chord ("unknown" in unrestricted mode when nothing is convincing)
     const free = isUnrestricted();
     const unknown = free && r.unknown;
     const name = unknown ? null : r.chord;
@@ -705,13 +943,12 @@
       highlightMatches();
       renderHistory();
     }
+
     det.chord.classList.toggle('stale', !r.active);
-    const topConf = free && r.candidates[0] ? r.candidates[0].confidence : clamp(r.score, 0, 1);
+    const topConf = free && r.candidates[0] && typeof r.candidates[0].confidence === 'number' ? r.candidates[0].confidence : clamp(r.score, 0, 1);
     det.conf.style.width = (name && r.active ? topConf * 100 : 0) + '%';
     if (free) renderCandidates(r);
-    const exp = follow.on ? follower.expected() : null;
-    setDetStatus((STATUS_TEXT[r.status] || '') + (exp ? ' · منتظر ' + exp.chord : ''), true);
-    if (follow.on && name && r.active) followDetected(name);
+    setDetStatus(STATUS_TEXT[r.status] || '', true);
 
     const parts = [];
     if (r.bass) parts.push('bass ' + MT.pcToName(r.bass.pc, state.preferFlats));
@@ -741,247 +978,72 @@
 
   /** Marks chords in the active line and the strip that match the detected chord. */
   function highlightMatches() {
-    el.sheet.querySelectorAll('.cd b.match').forEach((b) => b.classList.remove('match'));
-    el.strip.querySelectorAll('.diagram.match').forEach((b) => b.classList.remove('match'));
-    det.chord.classList.remove('match');
     const name = state.detected;
-    if (!name) return;
-    let inLine = false;
-    const line = state.lineEls[state.activeIdx];
-    if (line) {
-      line.querySelectorAll('.cd b').forEach((b) => {
-        if (MT.sameChord(b.dataset.c, name)) { b.classList.add('match'); inLine = true; }
-      });
-    }
-    el.strip.querySelectorAll('.diagram').forEach((d) => {
-      if (MT.sameChord(d.dataset.c, name)) d.classList.add('match');
+    el.sheet.querySelectorAll('b[data-c]').forEach((b) => {
+      const isMatch = !!name && MT.sameChord(b.dataset.c, name);
+      b.classList.toggle('match', isMatch);
+      b.classList.toggle('hit', isMatch);
     });
-    det.chord.classList.toggle('match', inLine);
+    el.strip.querySelectorAll('.diagram').forEach((d) => {
+      const isMatch = !!name && MT.sameChord(d.dataset.c, name);
+      d.classList.toggle('match', isMatch);
+      d.classList.toggle('hit', isMatch);
+    });
   }
 
-  // ------------------------------------------------ chord-synced scrolling
+  // ----------------------------------------------------------- chord pop
 
-  /**
-   * Follow mode: the page moves only when the player changes to the chord
-   * the sheet expects (or one within the next two chord lines). In
-   * unrestricted mode any new confident chord moves one chord forward.
-   */
-  function setFollow(on) {
-    follow.on = on;
-    el.followBtn.classList.toggle('on', on);
-    el.followBtn.setAttribute('aria-pressed', String(on));
-    document.body.classList.toggle('following', on);
-    if (on) {
-      scroller.stop();
-      follower.resetToLine(Math.max(0, state.activeIdx));
-      // In free mode the chord already ringing is not a "change".
-      if (isUnrestricted()) follower.lastChord = state.detected;
-      if (!listener.active) startListening('mic');
-      const exp = follower.expected();
-      toast(exp ? 'اسکرول با آکورد روشن شد — آکورد ' + exp.chord + ' را بزن' : 'اسکرول با آکورد روشن شد');
-    }
-    renderFollowMarks();
-    wakeLock.update();
+  function hidePop() {
+    el.pop.hidden = true;
   }
-
-  function renderFollowMarks() {
-    el.sheet.querySelectorAll('.cd b.expect, .cd b.window').forEach((b) => b.classList.remove('expect', 'window'));
-    if (!follow.on || !state.events) return;
-    follower.window().forEach((i) => state.events[i].el.classList.add('window'));
-    const exp = follower.expected();
-    if (exp) exp.el.classList.add('expect');
-  }
-
-  function scrollToLine(lineIdx) {
-    const c = state.lineCenters[lineIdx];
-    if (c === undefined) return;
-    const max = document.documentElement.scrollHeight - window.innerHeight;
-    const from = window.scrollY;
-    const to = clamp(c - state.focusY, 0, max);
-    const t0 = performance.now();
-    const dur = 450;
-    cancelAnimationFrame(follow.anim);
-    const step = (now) => {
-      const p = Math.min(1, (now - t0) / dur);
-      const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-      window.scrollTo(0, from + (to - from) * e);
-      if (p < 1) follow.anim = requestAnimationFrame(step);
-    };
-    follow.anim = requestAnimationFrame(step);
-  }
-
-  function followDetected(name) {
-    const idx = follower.update(name, isUnrestricted());
-    if (idx < 0) return;
-    scrollToLine(state.events[idx].line);
-    renderFollowMarks();
-    if (follower.done) toast('پایان آهنگ 🎉');
-  }
-
-  el.followBtn.addEventListener('click', () => setFollow(!follow.on));
-
-  // In follow mode, tapping a lyric line moves the "waiting" position there.
-  el.sheet.addEventListener('click', (e) => {
-    if (!follow.on || e.target.closest('.cd b')) return;
-    const line = e.target.closest('.line');
-    const i = line ? state.lineEls.indexOf(line) : -1;
-    if (i < 0) return;
-    follower.resetToLine(i);
-    renderFollowMarks();
-    scrollToLine(i);
-  });
-
-  // ------------------------------------------------------ chord popover
-
-  function showChordPop(name, anchor) {
+  function showPop(name, anchor) {
+    const shape = CS.getShape(name, state.transpose === 0 ? state.song.shapes : null);
     const c = MT.parseChord(name);
-    const custom = state.transpose === 0 ? state.song.shapes : null;
-    const shape = CS.getShape(name, custom);
-    const tones = c ? c.pcs.map((pc) => MT.pcToName(pc, state.preferFlats)).join(' ') : '';
-    el.pop.innerHTML = `<div class="name">${esc(name)}</div>` +
-      CS.diagramSVG(name, shape, { width: 120, height: 150, rootPc: c ? c.rootPc : null }) +
-      `<div class="tones">${esc(tones)}</div>`;
+    el.pop.innerHTML = CS.diagramSVG(name, shape, { width: 110, height: 140, rootPc: c ? c.rootPc : null }) +
+      `<div class="pop-name">${esc(name)}</div>`;
     el.pop.hidden = false;
     const r = anchor.getBoundingClientRect();
-    const pw = el.pop.offsetWidth;
-    const ph = el.pop.offsetHeight;
-    let left = r.left + r.width / 2 - pw / 2;
-    left = clamp(left, 8, window.innerWidth - pw - 8);
-    let top = r.bottom + 8;
-    if (top + ph > window.innerHeight - 8) top = r.top - ph - 8;
-    el.pop.style.left = left + 'px';
-    el.pop.style.top = Math.max(8, top) + 'px';
-  }
-  function hidePop() { el.pop.hidden = true; }
-
-  document.addEventListener('click', (e) => {
-    const b = e.target.closest('.cd b, .diagram');
-    if (b) {
-      showChordPop(b.dataset.c, b);
-      e.stopPropagation();
-      return;
-    }
-    if (!e.target.closest('#chordPop')) hidePop();
-  });
-  window.addEventListener('scroll', () => { if (!el.pop.hidden && !scroller.playing) hidePop(); }, { passive: true });
-
-  // ----------------------------------------------------- user songs dialog
-
-  const dlg = $('songDialog');
-  const form = $('songForm');
-  // form.title would be the form's own title attribute, so go via .elements.
-  const fld = (name) => form.elements.namedItem(name);
-
-  function openSongDialog() {
-    const editing = state.song && state.song.user ? state.song : null;
-    form.reset();
-    if (editing) {
-      fld('title').value = editing.title || '';
-      fld('artist').value = editing.artist || '';
-      fld('key').value = editing.key || '';
-      fld('bpm').value = editing.bpm || '';
-      fld('timeSignature').value = editing.timeSignature || '';
-      fld('rtl').checked = editing.dir === 'rtl';
-      fld('body').value = (editing.body || '').trim();
-    }
-    $('songDelete').hidden = !editing;
-    dlg.dataset.editing = editing ? editing.id : '';
-    if (dlg.showModal) dlg.showModal();
-    else dlg.setAttribute('open', '');
-  }
-  function closeSongDialog() {
-    if (dlg.close) dlg.close();
-    else dlg.removeAttribute('open');
+    const x = clamp(r.left + r.width / 2 - 60, 8, window.innerWidth - 128);
+    const y = r.bottom + 6;
+    el.pop.style.left = x + 'px';
+    el.pop.style.top = y + 'px';
   }
 
-  function songFromForm() {
-    const title = fld('title').value.trim();
-    const body = fld('body').value.replace(/\s+$/, '');
-    if (!title || !body.trim()) {
-      toast('عنوان و متن آهنگ لازم است.');
-      return null;
-    }
-    const base = title.toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, '-').replace(/^-+|-+$/g, '') || 'song';
-    const song = {
-      id: dlg.dataset.editing || 'user-' + base + '-' + Date.now().toString(36),
-      title,
-      artist: fld('artist').value.trim(),
-      key: fld('key').value.trim(),
-      bpm: Number(fld('bpm').value) || undefined,
-      timeSignature: fld('timeSignature').value.trim() || '4/4',
-      body: '\n' + body + '\n',
-    };
-    if (fld('rtl').checked) { song.dir = 'rtl'; song.lang = 'fa'; }
-    if (song.key && !MT.parseChord(song.key)) delete song.key;
-    return song;
-  }
+  el.sheet.addEventListener('click', (ev) => {
+    const b = ev.target.closest('b[data-c]');
+    if (!b) return;
+    showPop(b.dataset.c, b);
 
-  $('songSave').addEventListener('click', () => {
-    const song = songFromForm();
-    if (!song) return;
-    userSongs = userSongs.filter((s) => s.id !== song.id).concat([song]);
-    try { localStorage.setItem(USER_SONGS_KEY, JSON.stringify(userSongs)); } catch (e) { toast('ذخیره ممکن نشد (حافظهٔ مرورگر).'); }
-    closeSongDialog();
-    populateSongSelect();
-    loadSong(song.id);
-    toast('آهنگ ذخیره شد.');
-  });
-
-  $('songCopy').addEventListener('click', async () => {
-    const song = songFromForm();
-    if (!song) return;
-    const lib = Object.assign({}, song, { id: song.id.replace(/^user-/, '').replace(/-[a-z0-9]+$/, '') });
-    const lines = ['  {'];
-    Object.keys(lib).forEach((k) => {
-      if (lib[k] === undefined || lib[k] === '' || k === 'body') return;
-      lines.push(`    ${k}: ${JSON.stringify(lib[k])},`);
-    });
-    lines.push('    body: `' + lib.body.replace(/`/g, "'").replace(/\$\{/g, '$ {') + '`,');
-    lines.push('  },');
-    const text = lines.join('\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      toast('ورودی کپی شد — در آرایهٔ songs/library.js بچسبان.');
-    } catch (e) {
-      fld('body').value = text;
-      fld('body').select();
-      toast('کپی خودکار ممکن نشد؛ متن انتخاب شد، با Ctrl+C کپی کن.');
+    // In chord-sync practice mode or when mic is active: jump progress to clicked chord!
+    const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+    const clickedIdx = chordEls.indexOf(b);
+    if (clickedIdx >= 0) {
+      state.progressIdx = clickedIdx;
+      chordEls.forEach((el, i) => {
+        el.classList.toggle('done', i < clickedIdx);
+      });
+      updateCurrentChordHighlight();
     }
   });
-
-  $('songDelete').addEventListener('click', () => {
-    const id = dlg.dataset.editing;
-    if (!id || !confirm('این آهنگ حذف شود؟')) return;
-    userSongs = userSongs.filter((s) => s.id !== id);
-    try { localStorage.setItem(USER_SONGS_KEY, JSON.stringify(userSongs)); } catch (e) { /* ignore */ }
-    closeSongDialog();
-    populateSongSelect();
-    loadSong(allSongs()[0] && allSongs()[0].id);
+  el.strip.addEventListener('click', (ev) => {
+    const d = ev.target.closest('.diagram');
+    if (!d) return;
+    showPop(d.dataset.c, d);
   });
-  $('songCancel').addEventListener('click', closeSongDialog);
-  // Enter inside a field saves instead of silently closing the dialog.
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    $('songSave').click();
+  document.addEventListener('click', (ev) => {
+    if (!el.pop.hidden && !el.pop.contains(ev.target) && !ev.target.closest('b[data-c], .diagram')) hidePop();
   });
 
-  // ------------------------------------------------------------- wiring
-
-  el.songSelect.addEventListener('change', () => {
-    loadSong(el.songSelect.value);
-    el.songSelect.blur();
-  });
-  window.addEventListener('hashchange', () => {
-    const id = songIdFromHash();
-    if (id && (!state.song || id !== state.song.id)) loadSong(id, { keepHash: true });
-  });
+  // ------------------------------------------------------------- controls
 
   el.playBtn.addEventListener('click', () => scroller.toggle());
   el.restartBtn.addEventListener('click', () => scroller.restart());
   el.speed.addEventListener('input', () => {
     updateSpeedOut();
-    songPrefs(state.song.id).speed = +el.speed.value;
-    saveSettings();
+    if (state.song) {
+      songPrefs(state.song.id).speed = +el.speed.value;
+      saveSettings();
+    }
   });
 
   el.transDown.addEventListener('click', () => setTranspose(state.transpose - 1));
@@ -1000,25 +1062,55 @@
     if (bpm) setBpm(bpm);
   });
 
+  function setPracticeMode(active) {
+    state.practiceMode = active;
+    if (active) {
+      if (scroller.playing) scroller.stop();
+      el.focusLine.classList.add('show');
+      if (el.practiceBar) el.practiceBar.hidden = false;
+      resetChordProgress();
+      startListening('mic').then(() => {
+        toast('🎸 حالت تشخیص آکورد: با نواختن آکوردها یکی‌یکی جلو می‌رود');
+        updateCurrentChordHighlight();
+      }).catch(() => {
+        toast('میکروفون فعال نشد. با کلیک، Space یا دکمه‌های بعدی/قبلی می‌توانید تمرین کنید.');
+      });
+    } else {
+      stopListening(true);
+      if (el.practiceBar) el.practiceBar.hidden = true;
+      el.focusLine.classList.remove('show');
+      updateCurrentChordHighlight();
+    }
+  }
+
   el.micBtn.addEventListener('click', () => {
-    if (listener.active) stopListening(false);
-    else startListening('mic');
+    setPracticeMode(!state.practiceMode);
   });
-  det.useMic.addEventListener('click', () => startListening('mic'));
-  det.file.addEventListener('change', () => {
-    if (det.file.files && det.file.files[0]) startListening('file', det.file.files[0]);
-    det.file.value = '';
+
+  if (el.pPrevBtn) el.pPrevBtn.addEventListener('click', () => advanceChord(-1));
+  if (el.pNextBtn) el.pNextBtn.addEventListener('click', () => advanceChord(1));
+  if (el.pRestartBtn) el.pRestartBtn.addEventListener('click', () => {
+    resetChordProgress();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
-  det.file.parentElement.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); det.file.click(); }
+  el.themeBtn.addEventListener('click', toggleTheme);
+  el.fsBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+    else document.exitFullscreen();
   });
+  el.moreBtn.addEventListener('click', () => {
+    el.toolbar.classList.toggle('expanded');
+  });
+
+  // Song select
+  el.songSelect.addEventListener('change', () => loadSong(el.songSelect.value));
+
+  // Detector panel controls
   det.close.addEventListener('click', () => stopListening(true));
   det.min.addEventListener('click', () => {
     el.detector.classList.toggle('min');
-    det.min.textContent = el.detector.classList.contains('min') ? '▴' : '▾';
-    measureSoon();
+    el.detector.classList.toggle('minimized');
   });
-  det.unrestricted.checked = settings.unrestricted === true;
   det.unrestricted.addEventListener('change', () => {
     settings.unrestricted = det.unrestricted.checked;
     saveSettings();
@@ -1026,79 +1118,309 @@
     det.cands.innerHTML = '';
     lastShown = undefined;
   });
-  det.sens.value = settings.sensitivity;
   det.sens.addEventListener('input', () => {
     settings.sensitivity = +det.sens.value;
-    tracker.setSensitivity(sensToGate(settings.sensitivity));
     saveSettings();
+    tracker.setSensitivity(sensToGate(+det.sens.value));
   });
+  det.file.addEventListener('change', () => {
+    const f = det.file.files[0];
+    if (f) startListening('file', f);
+  });
+  det.useMic.addEventListener('click', () => startListening('mic'));
 
-  el.themeBtn.addEventListener('click', toggleTheme);
-  el.addSongBtn.addEventListener('click', openSongDialog);
-
-  const canFullscreen = Boolean(document.documentElement.requestFullscreen);
-  el.fsBtn.hidden = !canFullscreen;
-  function toggleFullscreen() {
-    if (!canFullscreen) return;
-    if (document.fullscreenElement) document.exitFullscreen();
-    else document.documentElement.requestFullscreen().catch(() => {});
+  // Debug panel toggle and controls
+  if (det.dbgToggle) {
+    det.dbgToggle.addEventListener('click', () => {
+      det.dbgPanel.hidden = !det.dbgPanel.hidden;
+      det.dbgToggle.classList.toggle('active', !det.dbgPanel.hidden);
+      el.detector.classList.toggle('debug-open', !det.dbgPanel.hidden);
+      if (!det.dbgPanel.hidden) {
+        renderDebugLog();
+        const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+        const currentTarget = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+        updateDebugView(null, null, currentTarget);
+      }
+    });
   }
-  el.fsBtn.addEventListener('click', toggleFullscreen);
 
-  el.moreBtn.addEventListener('click', () => {
-    const open = el.toolbar.classList.toggle('expanded');
-    el.moreBtn.setAttribute('aria-expanded', String(open));
-    measureSoon();
+  if (det.clearLogBtn) {
+    det.clearLogBtn.addEventListener('click', () => {
+      follower.log = [];
+      renderDebugLog();
+    });
+  }
+
+  // Strictness radio listeners
+  Array.from(document.querySelectorAll('input[name="strictness"]')).forEach((radio) => {
+    radio.addEventListener('change', () => {
+      if (radio.checked) {
+        follower.setStrictness(radio.value);
+        settings.strictness = radio.value;
+        saveSettings();
+        const cfg = CD.FOLLOWER_CONFIGS[radio.value];
+        if (cfg) toast(`حالت تطابق: ${cfg.name}`);
+        const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+        const currentTarget = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : null;
+        updateDebugView(null, null, currentTarget);
+      }
+    });
   });
 
-  // Buttons clicked with a mouse/finger should not keep focus, otherwise the
-  // next Space press would activate that button instead of the shortcut.
-  document.addEventListener('pointerup', (e) => {
-    const b = e.target.closest && e.target.closest('button');
-    if (b) setTimeout(() => b.blur(), 0);
-  });
+  // Audio recording & playback controls
+  if (det.recordBtn) {
+    det.recordBtn.addEventListener('click', async () => {
+      if (recorder.recording) {
+        recorder.stopRecording();
+        return;
+      }
+      det.recordBtn.textContent = '⏹ توقف ضبط';
+      det.recordBtn.classList.add('danger');
+      if (det.playRecordBtn) det.playRecordBtn.disabled = true;
+      try {
+        recordedBlob = await recorder.record(5000, (remaining) => {
+          if (det.recordTimer) det.recordTimer.textContent = `${remaining}s`;
+        });
+        det.recordBtn.textContent = '🔴 ضبط ۵ ثانیه';
+        det.recordBtn.classList.remove('danger');
+        if (det.recordTimer) det.recordTimer.textContent = 'آماده';
+        if (det.playRecordBtn) det.playRecordBtn.disabled = !recordedBlob;
+        toast('صدای گیتار ضبط شد! دکمه «تست ضبط» را بزن.');
+      } catch (e) {
+        det.recordBtn.textContent = '🔴 ضبط ۵ ثانیه';
+        det.recordBtn.classList.remove('danger');
+        if (det.recordTimer) det.recordTimer.textContent = 'خطا در ضبط';
+        toast('امکان ضبط صدا فراهم نشد: ' + ((e && e.message) || e));
+      }
+    });
+  }
 
-  // Keyboard shortcuts use physical keys (e.code), so they also work with a
-  // Persian keyboard layout.
-  document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const t = e.target || {};
-    const tag = t.tagName;
-    if ((tag === 'INPUT' && t.type !== 'range') || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
-    // A keyboard-focused button/summary keeps its native Space/Enter action.
-    if ((tag === 'BUTTON' || tag === 'SUMMARY') && (e.code === 'Space' || e.code === 'Enter')) return;
-    if (dlg.open) return;
-    switch (e.code) {
-      case 'Space': e.preventDefault(); scroller.toggle(); break;
-      case 'KeyR': scroller.restart(); break;
-      case 'KeyG': el.followBtn.click(); break;
-      case 'ArrowUp':
-        if (scroller.playing) { e.preventDefault(); el.speed.value = Math.min(100, +el.speed.value + 3); el.speed.dispatchEvent(new Event('input')); }
-        break;
-      case 'ArrowDown':
-        if (scroller.playing) { e.preventDefault(); el.speed.value = Math.max(0, +el.speed.value - 3); el.speed.dispatchEvent(new Event('input')); }
-        break;
-      case 'BracketLeft': setTranspose(state.transpose - 1); break;
-      case 'BracketRight': setTranspose(state.transpose + 1); break;
-      case 'Equal': case 'NumpadAdd': setZoom(settings.zoom + 0.1); break;
-      case 'Minus': case 'NumpadSubtract': setZoom(settings.zoom - 0.1); break;
-      case 'KeyM': toggleMetronome(); break;
-      case 'KeyT': el.tapBtn.click(); break;
-      case 'KeyL': el.micBtn.click(); break;
-      case 'KeyD': toggleTheme(); break;
-      case 'KeyF': toggleFullscreen(); break;
-      case 'Escape': hidePop(); break;
-      default: break;
+  if (det.playRecordBtn) {
+    det.playRecordBtn.addEventListener('click', () => {
+      if (recordedBlob) {
+        startListening('file', recordedBlob);
+      }
+    });
+  }
+
+  // Synthetic audio tests
+  if (det.testSeqBtn) {
+    det.testSeqBtn.addEventListener('click', () => {
+      const testChords = ['Am', 'C', 'Em', 'D'];
+      const wavBlob = AE.generateSyntheticProgression(testChords, { per: 1.6, lead: 0.3 });
+      resetChordProgress();
+      startListening('file', wavBlob);
+      toast('در حال اجرای تست توالی Am → C → Em → D');
+    });
+  }
+
+  if (det.testRingingBtn) {
+    det.testRingingBtn.addEventListener('click', () => {
+      const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
+      const targetChord = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : 'Em';
+      const wavBlob = AE.generateRingingChord(targetChord, 3.2);
+      startListening('file', wavBlob);
+      toast(`در حال پخش آکورد کشیده ${targetChord}`);
+    });
+  }
+
+  // ------------------------------------------------------------- add/edit song dialog
+
+  const songDialog = $('songDialog');
+  const songForm = $('songForm');
+  const songSave = $('songSave');
+  const songCopy = $('songCopy');
+  const songDelete = $('songDelete');
+  const songCancel = $('songCancel');
+
+  function openSongDialog(songToEdit) {
+    if (!songDialog) return;
+    songForm.reset();
+    if (songToEdit) {
+      songForm.title.value = songToEdit.title || '';
+      songForm.artist.value = songToEdit.artist || '';
+      songForm.key.value = songToEdit.key || '';
+      songForm.bpm.value = songToEdit.bpm || '';
+      songForm.timeSignature.value = songToEdit.timeSignature || '';
+      songForm.rtl.checked = songToEdit.lang === 'fa';
+      songForm.body.value = songToEdit.body || '';
+      songDelete.hidden = !songToEdit.user;
+      songDialog._editingId = songToEdit.id;
+    } else {
+      songDelete.hidden = true;
+      songDialog._editingId = null;
     }
-  });
+    songDialog.showModal();
+  }
 
-  // --------------------------------------------------------------- boot
+  function saveSongFromDialog() {
+    const title = songForm.title.value.trim();
+    const body = songForm.body.value.trim();
+    if (!title || !body) {
+      toast('عنوان و متن آهنگ الزامی هستند.');
+      return;
+    }
+    const artist = songForm.artist.value.trim();
+    const key = songForm.key.value.trim();
+    const bpm = Number(songForm.bpm.value) || undefined;
+    const timeSignature = songForm.timeSignature.value.trim() || undefined;
+    const isFa = songForm.rtl.checked || /[؀-ۿ]/.test(body);
 
-  applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light');
-  setZoom(settings.zoom || 1);
-  populateSongSelect();
-  loadSong(songIdFromHash() || settings.songId || (allSongs()[0] && allSongs()[0].id), { keepHash: Boolean(songIdFromHash()) });
+    const existingIdx = songDialog._editingId ? userSongs.findIndex((s) => s.id === songDialog._editingId) : -1;
+    const id = existingIdx >= 0 ? userSongs[existingIdx].id : 'user-' + Date.now();
+
+    const song = {
+      id,
+      title,
+      artist,
+      key: key || undefined,
+      bpm,
+      timeSignature,
+      lang: isFa ? 'fa' : 'en',
+      body,
+      user: true,
+    };
+
+    if (existingIdx >= 0) {
+      userSongs[existingIdx] = song;
+    } else {
+      userSongs.push(song);
+    }
+
+    try {
+      localStorage.setItem(USER_SONGS_KEY, JSON.stringify(userSongs));
+    } catch (e) {
+      toast('حافظه مرورگر پر است.');
+      return;
+    }
+
+    populateSongSelect();
+    loadSong(song.id);
+    songDialog.close();
+    toast('آهنگ ذخیره شد 🎉');
+  }
+
+  function copySongLibraryFormat() {
+    const title = songForm.title.value.trim() || 'Untitled';
+    const body = songForm.body.value;
+    const artist = songForm.artist.value.trim();
+    const key = songForm.key.value.trim();
+    const bpm = Number(songForm.bpm.value) || 90;
+    const timeSignature = songForm.timeSignature.value.trim() || '4/4';
+    const id = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'song-' + Date.now();
+    const obj = {
+      id,
+      title,
+      artist: artist || undefined,
+      key: key || undefined,
+      bpm: bpm || undefined,
+      timeSignature: timeSignature !== '4/4' ? timeSignature : undefined,
+      body,
+    };
+    const code = '  ' + JSON.stringify(obj, null, 2).replace(/\n/g, '\n  ') + ',';
+    navigator.clipboard.writeText(code).then(() => {
+      toast('کد در کلیپ‌بورد کپی شد');
+    }).catch(() => {
+      toast('امکان کپی خودکار وجود نداشت');
+    });
+  }
+
+  function deleteCurrentSong() {
+    if (!songDialog._editingId) return;
+    userSongs = userSongs.filter((s) => s.id !== songDialog._editingId);
+    try { localStorage.setItem(USER_SONGS_KEY, JSON.stringify(userSongs)); } catch (e) {}
+    populateSongSelect();
+    loadSong(allSongs()[0]?.id);
+    songDialog.close();
+    toast('آهنگ حذف شد');
+  }
+
+  if (songSave) songSave.addEventListener('click', saveSongFromDialog);
+  if (songCopy) songCopy.addEventListener('click', copySongLibraryFormat);
+  if (songDelete) songDelete.addEventListener('click', deleteCurrentSong);
+  if (songCancel) songCancel.addEventListener('click', () => songDialog.close());
+  el.addSongBtn.addEventListener('click', () => openSongDialog(null));
+
+  // ------------------------------------------------------------- init
+
+  function init() {
+    // Theme
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(settings.theme || (prefersDark ? 'dark' : 'light'));
+    // Zoom
+    setZoom(settings.zoom || 1);
+    // Detector defaults
+    det.unrestricted.checked = settings.unrestricted === true;
+    updateVocabulary();
+    det.sens.value = settings.sensitivity || 55;
+    const initialStrictness = settings.strictness || 'strict';
+    follower.setStrictness(initialStrictness);
+    const radio = document.querySelector(`input[name="strictness"][value="${initialStrictness}"]`);
+    if (radio) radio.checked = true;
+    // Songs
+    populateSongSelect();
+    const fromHash = songIdFromHash();
+    loadSong(fromHash || settings.songId || (allSongs()[0] && allSongs()[0].id), { keepHash: !!fromHash });
+    // Keyboard
+    document.addEventListener('keydown', (ev) => {
+      if (ev.target.matches('input, textarea, select')) return;
+      if (ev.key === ' ') {
+        ev.preventDefault();
+        if (state.practiceMode) advanceChord(1);
+        else scroller.toggle();
+      }
+      else if (ev.key === 'ArrowRight' && state.practiceMode) {
+        ev.preventDefault();
+        advanceChord(1);
+      }
+      else if (ev.key === 'ArrowLeft' && state.practiceMode) {
+        ev.preventDefault();
+        advanceChord(-1);
+      }
+      else if (ev.key === 'r' || ev.key === 'R') {
+        if (state.practiceMode) {
+          resetChordProgress();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          scroller.restart();
+        }
+      }
+      else if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        el.speed.value = Math.min(100, +el.speed.value + 5);
+        el.speed.dispatchEvent(new Event('input'));
+      }
+      else if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        el.speed.value = Math.max(0, +el.speed.value - 5);
+        el.speed.dispatchEvent(new Event('input'));
+      }
+      else if (ev.key === '[') setTranspose(state.transpose - 1);
+      else if (ev.key === ']') setTranspose(state.transpose + 1);
+      else if (ev.key === '0') setTranspose(0);
+      else if (ev.key === '+' || ev.key === '=') setZoom(settings.zoom + 0.1);
+      else if (ev.key === '-' || ev.key === '_') setZoom(settings.zoom - 0.1);
+      else if (ev.key === 'm' || ev.key === 'M') toggleMetronome();
+      else if (ev.key === 't' || ev.key === 'T') {
+        const bpm = tapper.tap();
+        if (bpm) setBpm(bpm);
+      }
+      else if (ev.key === 'l' || ev.key === 'L') el.micBtn.click();
+      else if (ev.key === 'd' || ev.key === 'D') toggleTheme();
+      else if (ev.key === 'f' || ev.key === 'F') el.fsBtn.click();
+      else if (ev.key === 'Escape') {
+        hidePop();
+        if (songDialog && songDialog.open) songDialog.close();
+      }
+    });
+    window.addEventListener('hashchange', () => {
+      const id = songIdFromHash();
+      if (id && (!state.song || state.song.id !== id)) loadSong(id, { keepHash: true });
+    });
+  }
 
   // Small debugging hook for the browser console.
-  window.GP.app = { state, follower, scroller, metronome, tracker, listener, loadSong, setTranspose, setZoom, measure };
+  window.GP.app = { state, scroller, metronome, tracker, follower, listener, recorder, loadSong, setTranspose, setZoom, measure, advanceChord };
+
+  init();
 })();

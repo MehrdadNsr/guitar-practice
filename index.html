@@ -39,7 +39,6 @@
     <div class="tool-group" role="group" aria-label="اسکرول خودکار">
       <button type="button" id="playBtn" class="primary play-btn" title="شروع / توقف اسکرول (Space)"><span class="ico">▶</span><span class="lbl">اسکرول</span></button>
       <button type="button" id="restartBtn" title="از اول (R)" aria-label="از اول">↺</button>
-      <button type="button" id="followBtn" class="follow-btn" title="اسکرول با آکورد: صفحه با آکوردی که می‌زنی جلو می‌رود (G)" aria-pressed="false"><span class="ico">🎸</span><span class="lbl">با آکورد</span></button>
       <label class="slider" title="سرعت اسکرول (↑ / ↓)">
         <span class="tool-label">سرعت</span>
         <input type="range" id="speed" min="0" max="100" step="1" value="40" aria-label="سرعت اسکرول">
@@ -84,6 +83,20 @@
 
   <section class="chord-strip" id="chordStrip" aria-label="آکوردهای این آهنگ"></section>
 
+  <div class="practice-bar" id="practiceBar" hidden>
+    <div class="practice-info">
+      <span class="p-badge">🎯 آکورد هدف:</span>
+      <strong class="p-chord mono" id="pTargetChord">—</strong>
+      <span class="p-next mono" id="pNextChord"></span>
+      <span class="p-count mono" id="pCount">(۰ / ۰)</span>
+    </div>
+    <div class="practice-actions">
+      <button type="button" id="pPrevBtn" class="small icon-btn" title="آکورد قبلی">◀</button>
+      <button type="button" id="pNextBtn" class="small icon-btn" title="آکورد بعدی (Space / کلیک)">▶</button>
+      <button type="button" id="pRestartBtn" class="small icon-btn" title="از اول">↺</button>
+    </div>
+  </div>
+
   <div id="topSpacer" aria-hidden="true"></div>
   <article class="sheet" id="sheet" dir="ltr" lang="en" aria-label="آکورد و متن آهنگ"></article>
   <div class="sheet-end" id="sheetEnd" aria-hidden="true">— پایان —</div>
@@ -113,6 +126,7 @@
     <span class="det-dot" id="detDot"></span>
     <span class="det-title">تشخیص آکورد</span>
     <span class="det-status" id="detStatus" aria-live="polite"></span>
+    <button type="button" id="dbgToggleBtn" class="pill-btn small" title="پنل عیب‌یابی و دیباگ">🛠 دیباگ</button>
     <button type="button" id="detMin" class="icon-btn small" title="کوچک / بزرگ" aria-label="کوچک / بزرگ">▾</button>
     <button type="button" id="detClose" class="icon-btn small" title="خاموش" aria-label="خاموش کردن">✕</button>
   </div>
@@ -135,13 +149,70 @@
     <div class="det-history mono" id="detHistory" dir="ltr" aria-label="آکوردهای اخیر"></div>
     <details class="det-settings">
       <summary>تنظیمات تشخیص</summary>
-      <label class="slider wide"><span class="tool-label">حساسیت</span><input type="range" id="sensitivity" min="0" max="100" step="1" value="55"></label>
+      <div class="setting-row">
+        <span class="tool-label">دقت تطابق (حساسیت):</span>
+        <div class="strictness-radios" id="strictnessGroup">
+          <label><input type="radio" name="strictness" value="strict" checked> سخت‌گیرانه (پیش‌فرض)</label>
+          <label><input type="radio" name="strictness" value="normal"> معمولی</label>
+          <label><input type="radio" name="strictness" value="loose"> آسان‌گیر</label>
+        </div>
+      </div>
+      <label class="slider wide"><span class="tool-label">گیت نویز صدا</span><input type="range" id="sensitivity" min="0" max="100" step="1" value="55"></label>
       <div class="det-actions">
         <button type="button" id="useMicBtn">🎤 میکروفون</button>
         <label class="file-btn" role="button" tabindex="0">🎵 فایل صوتی<input type="file" id="audioFile" accept="audio/*" hidden></label>
       </div>
-      <p class="hint">برای دقت بهتر: گوشی/لپ‌تاپ را نزدیک گیتار بگذار، سیم‌ها را کوک کن و هر آکورد را کامل بزن.</p>
+      <p class="hint">برای دقت بهتر: گوشی/لپ‌تاپ را نزدیک گیتار بگذار، سیم‌ها را کوک کن و هر آکورد را با یک مضراب مشخص بزن.</p>
     </details>
+
+    <section class="dbg-panel" id="dbgPanel" hidden aria-label="پنل دیباگ و ارزیابی">
+      <div class="dbg-section">
+        <div class="dbg-status-row">
+          <span class="dbg-fsm-badge" id="dbgFsmBadge">WAITING_FOR_STRUM</span>
+          <span class="dbg-strum-led" id="dbgStrumLed">🎸 مضراب</span>
+        </div>
+      </div>
+
+      <div class="dbg-section dbg-target-card">
+        <div class="dbg-chord-row">
+          <div><small>آکورد هدف:</small><strong class="dbg-chord mono" id="dbgTargetVal">—</strong></div>
+          <div><small>شنیده شده:</small><strong class="dbg-chord mono" id="dbgBestVal">—</strong></div>
+        </div>
+        <div class="dbg-meter-box">
+          <div class="dbg-meter-labels">
+            <span>اطمینان هدف: <span id="dbgTargetScoreNum" class="mono">۰٪</span></span>
+            <span>آستانه: <span id="dbgThreshNum" class="mono">۶۰٪</span></span>
+          </div>
+          <div class="meter dbg-meter">
+            <div class="meter-fill" id="dbgTargetScoreFill"></div>
+            <div class="meter-threshold-line" id="dbgTargetThreshLine" style="left: 60%"></div>
+          </div>
+        </div>
+        <div class="dbg-reason-text" id="dbgLiveReason">در انتظار مضراب جدید</div>
+      </div>
+
+      <div class="dbg-section dbg-tools">
+        <div class="dbg-tools-title">🎙️ ضبط و آزمایش زنده صدای گیتار:</div>
+        <div class="dbg-btn-row">
+          <button type="button" id="dbgRecordBtn" class="small primary">🔴 ضبط ۵ ثانیه</button>
+          <button type="button" id="dbgPlayRecordBtn" class="small" disabled>▶ تست ضبط</button>
+          <span id="dbgRecordTimer" class="mono"></span>
+        </div>
+        <div class="dbg-tools-title" style="margin-top: 8px;">🧪 تست با صدای شبیه‌سازی‌شده:</div>
+        <div class="dbg-btn-row">
+          <button type="button" id="dbgTestSeqBtn" class="small">▶ تست توالی Am-C-Em-D</button>
+          <button type="button" id="dbgTestRingingBtn" class="small">▶ تست آکورد کشیده</button>
+        </div>
+      </div>
+
+      <div class="dbg-section">
+        <div class="dbg-log-head">
+          <span>لاگ تصمیمات تشخیص:</span>
+          <button type="button" id="dbgClearLogBtn" class="small icon-btn" title="پاک کردن لاگ">✕</button>
+        </div>
+        <div class="dbg-log mono" id="dbgLogList" dir="ltr"></div>
+      </div>
+    </section>
   </div>
 </aside>
 
@@ -176,7 +247,6 @@
 <script src="js/chord-shapes.js"></script>
 <script src="js/chord-detector.js"></script>
 <script src="js/audio-engine.js"></script>
-<script src="js/chord-follower.js"></script>
 <script src="songs/library.js"></script>
 <script src="js/app.js"></script>
 </body>

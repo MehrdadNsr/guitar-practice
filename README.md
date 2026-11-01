@@ -8,7 +8,7 @@ The UI is in Persian (RTL); code and comments are in English.
 
 - Chords sit **directly above the exact character** where they change (monospace,
   pixel-aligned, verified in tests). They also stay on their word when long lines wrap on a phone.
-- **Chord-synced scroll** («🎸 با آکورد»): the page follows the chords you actually play, not a clock.
+- **Chord-synced scroll** (🎤 «تشخیص آکورد» starts practice mode): the page follows the chords you actually play, not a clock.
 - **Auto-scroll** (timer) with play/pause, restart and an exponential speed slider
   (4 px/s very slow to 240 px/s fast). Manual scrolling while playing just moves the playhead.
 - The **line at the centre of the screen is highlighted** (with a reading guide while scrolling).
@@ -99,7 +99,7 @@ this browser). Use **کپی ورودی کتابخانه** to copy a ready-made e
 | `+` / `−` | zoom |
 | `M` | metronome · `T` tap tempo |
 | `L` | chord detection on/off |
-| `G` | chord-synced scroll on/off |
+| `←` / `→` | previous / next chord (practice mode) |
 | `D` | dark mode · `F` fullscreen |
 
 Shortcuts use physical key positions, so they also work with a Persian keyboard layout.
@@ -140,40 +140,29 @@ Shortcuts use physical key positions, so they also work with a Persian keyboard 
   - Ranking stays live even without a fresh strum, so a sustained or sung note keeps moving the display.
 - The toggle is saved in `localStorage` (`gp:settings` → `unrestricted`) and survives a reload.
 
-## Chord-synced scroll
+## Chord-synced scroll (practice mode)
 
-Press **🎸 با آکورد** (or `G`). The microphone starts if it isn't already on, and the timer scroll
-stops (the two modes are exclusive).
+Press **🎤 تشخیص آکورد** (or `L`). The microphone starts, the timer scroll stops, and the sheet
+waits for you:
 
-1. The song becomes a list of chord events in reading order. The chord the app is waiting for
-   **pulses with a coloured outline**. Chords in the tolerance window are dotted-underlined, and
-   the detector panel's status shows «منتظر Am».
-2. When the detector recognises that chord, the sheet smoothly scrolls so its line sits on the
-   centre line, and the next chord starts pulsing. A wrong chord does nothing: the page waits.
-3. **Tolerance:** any chord from the expected one through the chords of the next **two chord
-   lines** is accepted. Playing slightly ahead, or a missed change, jumps straight to it. A chord
-   that is still ringing never counts twice.
-4. **Unrestricted mode:** a matching chord in the window still jumps there. Any *other* new
-   confident chord (not "unknown") moves one chord forward, so the sheet follows improvisation
-   or chords outside the sheet.
-5. Tap any lyric line to restart waiting from that line. `R` goes back to the first chord.
-   Changing song resets to the first chord. Transposing keeps your place.
-
-The matching logic is a small pure module (`js/chord-follower.js`) with its own tests.
-
-Measured on synthetic guitar recordings (Karplus-Strong strings strummed with real voicings,
-several timbres, detuning and noise):
-
-- Song mode: 100 % of frames correct, about 220 ms after the strum.
-- Open mode: about 92 % across all timbres (97–100 % on the realistic pluck model).
-- Noise and mains hum: zero false chords.
-- 8 re-strums per chord: no flicker.
-
-`tests/browser-e2e.js` replays a WAV through Chromium's fake microphone and confirms the same
-behaviour in a real browser.
-
-**Tips:** put the phone/laptop close to the guitar, tune up, strum all the strings of the chord,
-and raise «حساسیت» (sensitivity) in a quiet room or lower it in a noisy one.
+1. The chord you must play next is **highlighted and pulses** (orange badge with ▼), and the
+   practice bar shows it together with the following chord. Chords inside the tolerance window
+   are dotted-underlined.
+2. When you play that chord, the app moves to the next chord. When the next chord is on a new
+   line, the page scrolls so that line sits on the centre line. **A wrong chord does nothing: the
+   page waits.**
+3. Two paths can advance:
+   - *Strict evaluator (SongFollower):* compares every strum directly against the expected chord.
+     How strict it is comes from «دقت تطابق» (strict / normal / loose).
+   - *Tolerance window:* when the detector's displayed chord **changes** to a chord found
+     anywhere from the expected chord through the chords of the **next chord line**, the
+     progress jumps there. A slightly early change or a missed strum doesn't break sync.
+   A chord that keeps ringing never counts twice, and a chord already sounding when practice
+   starts is ignored.
+4. **Unrestricted mode:** a change into the window still jumps there. Any *other* new confident
+   chord (not "unknown") moves one chord forward, so the sheet follows a player who improvises or
+   uses chords outside the sheet.
+5. `←` / `→` or the practice-bar buttons step back or forward by hand. ↺ restarts from the first chord.
 
 ## Project structure
 
@@ -184,7 +173,6 @@ js/music-theory.js    note names, chord parsing, transposition, key spelling
 js/song-parser.js     ChordPro / chords-over-lyrics → line model + word layout
 js/chord-shapes.js    fingerings (open shapes + movable E/A barre shapes) and SVG diagrams
 js/chord-detector.js  DSP + recognition + stability voting (pure, testable)
-js/chord-follower.js  chord-synced scroll: expected chord, tolerance window (pure, testable)
 js/audio-engine.js    AudioContext, look-ahead metronome, tap tempo, mic/file listener
 js/app.js             UI controller (rendering, auto-scroll, highlight, panels, dialog)
 songs/library.js      the song library — one entry per song

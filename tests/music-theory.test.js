@@ -53,3 +53,13 @@ test('sameChord compares enharmonic roots and quality', () => {
   assert.ok(!MT.sameChord('Am', 'A'));
   assert.ok(MT.sameChord('Gb', 'F#'));
 });
+
+test('lowercase chord and key names still parse and spell correctly', () => {
+  const am = MT.parseChord('am');
+  assert.ok(am);
+  assert.equal(am.root, 'A');
+  assert.equal(am.quality, 'min');
+  assert.equal(MT.parseChord('bbm7').root, 'Bb');
+  assert.ok(MT.keyPrefersFlats('gb'));
+  assert.equal(MT.transposeKey('em', 1), 'Fm');
+});

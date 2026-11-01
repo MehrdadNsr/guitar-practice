@@ -77,13 +77,17 @@
     detected: null,
   };
 
+  // Chord-synced scroll state (see js/chord-follower.js).
+  const follower = new GP.ChordFollower.ChordFollower([]);
+  const follow = { on: false, anim: 0 };
+
   const el = {
     appbar: $('appbar'), toolbar: $('toolbar'), songSelect: $('songSelect'),
     playBtn: $('playBtn'), restartBtn: $('restartBtn'), speed: $('speed'), speedOut: $('speedOut'),
     transDown: $('transDown'), transUp: $('transUp'), keyOut: $('keyOut'),
     zoomInBtn: $('zoomInBtn'), zoomOutBtn: $('zoomOutBtn'), zoomOut: $('zoomOut'),
     metroBtn: $('metroBtn'), bpm: $('bpm'), bpmDown: $('bpmDown'), bpmUp: $('bpmUp'), tapBtn: $('tapBtn'), beats: $('beats'),
-    micBtn: $('micBtn'), themeBtn: $('themeBtn'), fsBtn: $('fsBtn'), moreBtn: $('moreBtn'), addSongBtn: $('addSongBtn'),
+    micBtn: $('micBtn'), followBtn: $('followBtn'), themeBtn: $('themeBtn'), fsBtn: $('fsBtn'), moreBtn: $('moreBtn'), addSongBtn: $('addSongBtn'),
     title: $('songTitle'), meta: $('songMeta'), strip: $('chordStrip'), sheet: $('sheet'), topSpacer: $('topSpacer'),
     focusLine: $('focusLine'), detector: $('detector'), pop: $('chordPop'), toast: $('toast'),
   };
@@ -157,6 +161,7 @@
     }
     document.title = song.title + ' — تمرین گیتار';
     saveSettings();
+    follower.next = 0; // a new song starts waiting for its first chord
     render();
     window.scrollTo(0, 0);
   }
@@ -288,6 +293,13 @@
     el.sheet.innerHTML = out.join('');
     state.lineEls = Array.from(el.sheet.querySelectorAll('.line'));
     state.activeIdx = -1;
+    // Flat chord sequence in reading order, for chord-synced scrolling.
+    state.events = [];
+    state.lineEls.forEach((ln, i) => {
+      ln.querySelectorAll('.cd b').forEach((b) => state.events.push({ line: i, chord: b.dataset.c, el: b }));
+    });
+    follower.setEvents(state.events);
+    renderFollowMarks();
   }
 
   // ------------------------------------------- layout + centre highlight
@@ -376,6 +388,7 @@
     raf: 0,
     start() {
       if (this.playing) return;
+      if (follow.on) setFollow(false); // timer and chord-follow are exclusive
       if (this.atEnd()) window.scrollTo(0, 0);
       this.playing = true;
       this.pos = window.scrollY;
@@ -424,6 +437,10 @@
       this.raf = requestAnimationFrame((t) => this.step(t));
     },
     restart() {
+      if (follow.on) {
+        follower.resetToLine(0);
+        renderFollowMarks();
+      }
       window.scrollTo(0, 0);
       this.pos = 0;
       this.lastSet = window.scrollY;
@@ -637,6 +654,7 @@
   }
 
   function stopListening(hide) {
+    if (hide && follow.on) setFollow(false);
     listener.stop();
     el.micBtn.classList.remove('on');
     setDetStatus('خاموش', false);
@@ -691,7 +709,9 @@
     const topConf = free && r.candidates[0] ? r.candidates[0].confidence : clamp(r.score, 0, 1);
     det.conf.style.width = (name && r.active ? topConf * 100 : 0) + '%';
     if (free) renderCandidates(r);
-    setDetStatus(STATUS_TEXT[r.status] || '', true);
+    const exp = follow.on ? follower.expected() : null;
+    setDetStatus((STATUS_TEXT[r.status] || '') + (exp ? ' · منتظر ' + exp.chord : ''), true);
+    if (follow.on && name && r.active) followDetected(name);
 
     const parts = [];
     if (r.bass) parts.push('bass ' + MT.pcToName(r.bass.pc, state.preferFlats));
@@ -738,6 +758,78 @@
     });
     det.chord.classList.toggle('match', inLine);
   }
+
+  // ------------------------------------------------ chord-synced scrolling
+
+  /**
+   * Follow mode: the page moves only when the player changes to the chord
+   * the sheet expects (or one within the next two chord lines). In
+   * unrestricted mode any new confident chord moves one chord forward.
+   */
+  function setFollow(on) {
+    follow.on = on;
+    el.followBtn.classList.toggle('on', on);
+    el.followBtn.setAttribute('aria-pressed', String(on));
+    document.body.classList.toggle('following', on);
+    if (on) {
+      scroller.stop();
+      follower.resetToLine(Math.max(0, state.activeIdx));
+      // In free mode the chord already ringing is not a "change".
+      if (isUnrestricted()) follower.lastChord = state.detected;
+      if (!listener.active) startListening('mic');
+      const exp = follower.expected();
+      toast(exp ? 'اسکرول با آکورد روشن شد — آکورد ' + exp.chord + ' را بزن' : 'اسکرول با آکورد روشن شد');
+    }
+    renderFollowMarks();
+    wakeLock.update();
+  }
+
+  function renderFollowMarks() {
+    el.sheet.querySelectorAll('.cd b.expect, .cd b.window').forEach((b) => b.classList.remove('expect', 'window'));
+    if (!follow.on || !state.events) return;
+    follower.window().forEach((i) => state.events[i].el.classList.add('window'));
+    const exp = follower.expected();
+    if (exp) exp.el.classList.add('expect');
+  }
+
+  function scrollToLine(lineIdx) {
+    const c = state.lineCenters[lineIdx];
+    if (c === undefined) return;
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    const from = window.scrollY;
+    const to = clamp(c - state.focusY, 0, max);
+    const t0 = performance.now();
+    const dur = 450;
+    cancelAnimationFrame(follow.anim);
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+      window.scrollTo(0, from + (to - from) * e);
+      if (p < 1) follow.anim = requestAnimationFrame(step);
+    };
+    follow.anim = requestAnimationFrame(step);
+  }
+
+  function followDetected(name) {
+    const idx = follower.update(name, isUnrestricted());
+    if (idx < 0) return;
+    scrollToLine(state.events[idx].line);
+    renderFollowMarks();
+    if (follower.done) toast('پایان آهنگ 🎉');
+  }
+
+  el.followBtn.addEventListener('click', () => setFollow(!follow.on));
+
+  // In follow mode, tapping a lyric line moves the "waiting" position there.
+  el.sheet.addEventListener('click', (e) => {
+    if (!follow.on || e.target.closest('.cd b')) return;
+    const line = e.target.closest('.line');
+    const i = line ? state.lineEls.indexOf(line) : -1;
+    if (i < 0) return;
+    follower.resetToLine(i);
+    renderFollowMarks();
+    scrollToLine(i);
+  });
 
   // ------------------------------------------------------ chord popover
 
@@ -979,6 +1071,7 @@
     switch (e.code) {
       case 'Space': e.preventDefault(); scroller.toggle(); break;
       case 'KeyR': scroller.restart(); break;
+      case 'KeyG': el.followBtn.click(); break;
       case 'ArrowUp':
         if (scroller.playing) { e.preventDefault(); el.speed.value = Math.min(100, +el.speed.value + 3); el.speed.dispatchEvent(new Event('input')); }
         break;
@@ -1007,5 +1100,5 @@
   loadSong(songIdFromHash() || settings.songId || (allSongs()[0] && allSongs()[0].id), { keepHash: Boolean(songIdFromHash()) });
 
   // Small debugging hook for the browser console.
-  window.GP.app = { state, scroller, metronome, tracker, listener, loadSong, setTranspose, setZoom, measure };
+  window.GP.app = { state, follower, scroller, metronome, tracker, listener, loadSong, setTranspose, setZoom, measure };
 })();

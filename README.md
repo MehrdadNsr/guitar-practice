@@ -8,7 +8,8 @@ The UI is in Persian (RTL); code and comments are in English.
 
 - Chords sit **directly above the exact character** where they change (monospace,
   pixel-aligned, verified in tests). They also stay on their word when long lines wrap on a phone.
-- **Auto-scroll** with play/pause, restart and an exponential speed slider
+- **Chord-synced scroll** («🎸 با آکورد»): the page follows the chords you actually play, not a clock.
+- **Auto-scroll** (timer) with play/pause, restart and an exponential speed slider
   (4 px/s very slow to 240 px/s fast). Manual scrolling while playing just moves the playhead.
 - The **line at the centre of the screen is highlighted** (with a reading guide while scrolling).
 - **Metronome** with a drift-free Web Audio scheduler, BPM input, ± buttons, tap tempo, accented downbeat and beat lights.
@@ -98,6 +99,7 @@ this browser). Use **کپی ورودی کتابخانه** to copy a ready-made e
 | `+` / `−` | zoom |
 | `M` | metronome · `T` tap tempo |
 | `L` | chord detection on/off |
+| `G` | chord-synced scroll on/off |
 | `D` | dark mode · `F` fullscreen |
 
 Shortcuts use physical key positions, so they also work with a Persian keyboard layout.
@@ -124,9 +126,40 @@ Shortcuts use physical key positions, so they also work with a Persian keyboard 
    on long attack-free drones (hum, fans), or while the gate is closed. Gate hysteresis and a
    warm-up phase that learns the room's minimum level.
 
-**Song mode** (default, «فقط آکوردهای همین آهنگ») only considers the chords of the current song
-in the current key, which is the most accurate setting for practice. Turn it off to recognise
-any root × {maj, m, 7, maj7, m7, sus2, sus4, dim, aug}.
+### Restricted vs unrestricted mode
+
+- **Restricted (song) mode** is the default. Only the chords of the current song, in the current
+  key, are considered. This is the most accurate setting for practice.
+- **Unrestricted mode**: tick «حالت آزاد — همهٔ آکوردهای ماژور و مینور» in the detector panel.
+  The song filter is removed and all **24 major and minor chords** compete. The panel shows the
+  **top 4 candidates side by side** with confidence bars, so you can watch detection move between
+  chords as you play or sing.
+  - Confidence is the match score scaled by a *tonal stability* factor. Held notes and chords
+    stay near 100 %; speech, whose pitch glides constantly, drops sharply.
+  - If the best candidate is below **0.3** (30 %) the panel shows **unknown** instead of guessing.
+  - Ranking stays live even without a fresh strum, so a sustained or sung note keeps moving the display.
+- The toggle is saved in `localStorage` (`gp:settings` → `unrestricted`) and survives a reload.
+
+## Chord-synced scroll
+
+Press **🎸 با آکورد** (or `G`). The microphone starts if it isn't already on, and the timer scroll
+stops (the two modes are exclusive).
+
+1. The song becomes a list of chord events in reading order. The chord the app is waiting for
+   **pulses with a coloured outline**. Chords in the tolerance window are dotted-underlined, and
+   the detector panel's status shows «منتظر Am».
+2. When the detector recognises that chord, the sheet smoothly scrolls so its line sits on the
+   centre line, and the next chord starts pulsing. A wrong chord does nothing: the page waits.
+3. **Tolerance:** any chord from the expected one through the chords of the next **two chord
+   lines** is accepted. Playing slightly ahead, or a missed change, jumps straight to it. A chord
+   that is still ringing never counts twice.
+4. **Unrestricted mode:** a matching chord in the window still jumps there. Any *other* new
+   confident chord (not "unknown") moves one chord forward, so the sheet follows improvisation
+   or chords outside the sheet.
+5. Tap any lyric line to restart waiting from that line. `R` goes back to the first chord.
+   Changing song resets to the first chord. Transposing keeps your place.
+
+The matching logic is a small pure module (`js/chord-follower.js`) with its own tests.
 
 Measured on synthetic guitar recordings (Karplus-Strong strings strummed with real voicings,
 several timbres, detuning and noise):
@@ -151,6 +184,7 @@ js/music-theory.js    note names, chord parsing, transposition, key spelling
 js/song-parser.js     ChordPro / chords-over-lyrics → line model + word layout
 js/chord-shapes.js    fingerings (open shapes + movable E/A barre shapes) and SVG diagrams
 js/chord-detector.js  DSP + recognition + stability voting (pure, testable)
+js/chord-follower.js  chord-synced scroll: expected chord, tolerance window (pure, testable)
 js/audio-engine.js    AudioContext, look-ahead metronome, tap tempo, mic/file listener
 js/app.js             UI controller (rendering, auto-scroll, highlight, panels, dialog)
 songs/library.js      the song library — one entry per song
@@ -212,6 +246,12 @@ Other decisions:
 - The second library entry (*Amazing Grace*, public domain) shows the chords-over-lyrics format.
 
 ## Known limitations
+
+- Chord-synced scroll reacts to chord *changes*. Two identical chords in a row (e.g. `Am … Am`)
+  count as one change, and the page catches up at the next different chord. Strumming the same
+  chord for several lines without a change does not scroll.
+- Chord-synced scroll needs a working microphone and accurate detection. In noisy rooms, use
+  restricted mode (fewer chords to confuse) or the timer scroll.
 
 - Chord detection is tuned for strummed acoustic/clean guitar. Heavy distortion, a full band in
   the background, or very quiet fingerpicking reduce accuracy. Song mode helps a lot.

@@ -14,7 +14,9 @@
   const AE = GP.Audio;
 
   const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s).replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
+  const esc = (s) => String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
   // ----------------------------------------------------------- settings
@@ -165,6 +167,7 @@
     document.title = song.title + ' — تمرین گیتار';
     saveSettings();
     render();
+    resetChordProgress(); // a new song starts at its first chord
     window.scrollTo(0, 0);
   }
 
@@ -209,6 +212,7 @@
     if (song.notes) chips.push(`<span class="chip note" dir="auto">${esc(song.notes)}</span>`);
     if (song.youtubeId) chips.push('<button type="button" class="yt-btn" id="ytBtn">▶ YouTube</button>');
     el.meta.innerHTML = chips.join('');
+    document.querySelectorAll('.yt-frame').forEach((f) => f.remove()); // video of the previous song
     const yt = $('ytBtn');
     if (yt) {
       yt.addEventListener('click', () => {
@@ -295,7 +299,10 @@
     el.sheet.innerHTML = out.join('');
     state.lineEls = Array.from(el.sheet.querySelectorAll('.line'));
     state.activeIdx = -1;
-    resetChordProgress();
+    // Re-rendering (e.g. transposing) keeps the practice position.
+    const total = el.sheet.querySelectorAll('b[data-c]').length;
+    state.progressIdx = Math.min(state.progressIdx, total);
+    updateCurrentChordHighlight();
   }
 
   function resetChordProgress() {
@@ -316,7 +323,7 @@
     const total = chordEls.length;
     const win = state.practiceMode ? toleranceWindow(chordEls) : [];
     chordEls.forEach((b, i) => {
-      b.classList.toggle('done', i < state.progressIdx);
+      b.classList.toggle('done', state.practiceMode && i < state.progressIdx);
       b.classList.toggle('current-chord', state.practiceMode && i === state.progressIdx);
       b.classList.toggle('window', i !== state.progressIdx && win.includes(i));
     });
@@ -398,7 +405,8 @@
   }
 
   function readingArea() {
-    const top = el.appbar.getBoundingClientRect().bottom;
+    let top = el.appbar.getBoundingClientRect().bottom;
+    if (el.practiceBar && !el.practiceBar.hidden) top = Math.max(top, el.practiceBar.getBoundingClientRect().bottom);
     let bottom = window.innerHeight;
     if (!el.detector.hidden && window.innerWidth <= 760) bottom = el.detector.getBoundingClientRect().top;
     return { top, bottom: Math.max(top + 120, bottom) };
@@ -475,6 +483,7 @@
     raf: 0,
     start() {
       if (this.playing) return;
+      if (state.practiceMode) setPracticeMode(false); // timer scroll replaces chord-following
       if (this.atEnd()) window.scrollTo(0, 0);
       this.playing = true;
       this.pos = window.scrollY;
@@ -485,9 +494,6 @@
       el.playBtn.querySelector('.lbl').textContent = 'توقف';
       el.playBtn.setAttribute('aria-pressed', 'true');
       el.focusLine.classList.add('show');
-      if (listener.active) {
-        updateCurrentChordHighlight();
-      }
       wakeLock.update();
     },
     stop() {
@@ -497,7 +503,7 @@
       el.playBtn.querySelector('.ico').textContent = '▶';
       el.playBtn.querySelector('.lbl').textContent = 'اسکرول';
       el.playBtn.setAttribute('aria-pressed', 'false');
-      if (!listener.active) el.focusLine.classList.remove('show');
+      if (!state.practiceMode) el.focusLine.classList.remove('show');
       wakeLock.update();
     },
     toggle() { if (this.playing) this.stop(); else this.start(); },
@@ -514,8 +520,8 @@
       // The reader grabbed the page: continue from where they left it.
       if (Math.abs(window.scrollY - this.lastSet) > 3) this.pos = window.scrollY;
 
-      // In chord-sync practice mode (when mic is listening), movement is driven by guitar chords
-      if (listener.active || state.practiceMode) {
+      // In practice mode movement is driven by the played chords, not the clock.
+      if (state.practiceMode) {
         this.lastSet = window.scrollY;
         this.raf = requestAnimationFrame((t) => this.step(t));
         return;
@@ -731,7 +737,7 @@
       if (perm === 'denied') {
         setDetStatus('دسترسی رد شده', false);
         toast(ERROR_TEXT.denied, 6000);
-        return;
+        return false;
       }
       setDetStatus('در انتظار اجازهٔ میکروفون…', false);
     } else {
@@ -744,6 +750,8 @@
       else await listener.startFile(file);
       el.micBtn.classList.add('on');
       setDetStatus(kind === 'mic' ? 'در حال گوش دادن…' : 'در حال پخش و تحلیل فایل…', true);
+      wakeLock.update();
+      return true;
     } catch (err) {
       const code = (err && err.code) || 'unknown';
       setDetStatus('خطا', false);
@@ -752,6 +760,7 @@
       if (window.console) console.warn('[chord detector]', code, err);
     }
     wakeLock.update();
+    return false;
   }
 
   function stopListening(hide) {
@@ -770,6 +779,7 @@
     det.chord.textContent = '—';
     det.chord.className = 'det-chord mono';
     det.history.innerHTML = '';
+    if (det.cands) det.cands.innerHTML = '';
     det.alt.textContent = '';
     det.sub.textContent = '';
     det.conf.style.width = '0%';
@@ -889,7 +899,7 @@
 
   /** Advance one chord at a time using actual DOM order of chords in the sheet. */
   function advanceToDetectedChord(r) {
-    if (!state.practiceMode && !listener.active) return;
+    if (!state.practiceMode) return;
     const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
     if (!chordEls.length || state.progressIdx >= chordEls.length) return;
 
@@ -979,8 +989,9 @@
   /** Marks chords in the active line and the strip that match the detected chord. */
   function highlightMatches() {
     const name = state.detected;
+    const line = state.lineEls[state.activeIdx];
     el.sheet.querySelectorAll('b[data-c]').forEach((b) => {
-      const isMatch = !!name && MT.sameChord(b.dataset.c, name);
+      const isMatch = !!name && !!line && line.contains(b) && MT.sameChord(b.dataset.c, name);
       b.classList.toggle('match', isMatch);
       b.classList.toggle('hit', isMatch);
     });
@@ -1014,14 +1025,13 @@
     if (!b) return;
     showPop(b.dataset.c, b);
 
-    // In chord-sync practice mode or when mic is active: jump progress to clicked chord!
+    // In practice mode, clicking a chord moves the practice position there.
+    if (!state.practiceMode) return;
     const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
     const clickedIdx = chordEls.indexOf(b);
     if (clickedIdx >= 0) {
       state.progressIdx = clickedIdx;
-      chordEls.forEach((el, i) => {
-        el.classList.toggle('done', i < clickedIdx);
-      });
+      lastFollowChord = null;
       updateCurrentChordHighlight();
     }
   });
@@ -1033,6 +1043,7 @@
   document.addEventListener('click', (ev) => {
     if (!el.pop.hidden && !el.pop.contains(ev.target) && !ev.target.closest('b[data-c], .diagram')) hidePop();
   });
+  window.addEventListener('scroll', () => { if (!el.pop.hidden) hidePop(); }, { passive: true });
 
   // ------------------------------------------------------------- controls
 
@@ -1062,24 +1073,33 @@
     if (bpm) setBpm(bpm);
   });
 
-  function setPracticeMode(active) {
+  /**
+   * Practice (chord-synced) mode. `withMic: false` is used by the debug test
+   * buttons, which feed an audio file instead of the microphone.
+   */
+  function setPracticeMode(active, opts) {
+    const withMic = !opts || opts.withMic !== false;
+    if (active === state.practiceMode && !(active && withMic && !listener.active)) return;
     state.practiceMode = active;
     if (active) {
       if (scroller.playing) scroller.stop();
       el.focusLine.classList.add('show');
       if (el.practiceBar) el.practiceBar.hidden = false;
       resetChordProgress();
-      startListening('mic').then(() => {
-        toast('🎸 حالت تشخیص آکورد: با نواختن آکوردها یکی‌یکی جلو می‌رود');
-        updateCurrentChordHighlight();
-      }).catch(() => {
-        toast('میکروفون فعال نشد. با کلیک، Space یا دکمه‌های بعدی/قبلی می‌توانید تمرین کنید.');
+      measureSoon();
+      if (!withMic) return;
+      startListening('mic').then((ok) => {
+        // On failure startListening already showed the reason; keep practice
+        // mode for manual stepping and say so after the error has been read.
+        if (ok) toast('🎸 حالت تشخیص آکورد: با نواختن آکوردها یکی‌یکی جلو می‌رود');
+        else setTimeout(() => toast('بدون میکروفون هم می‌توانی تمرین کنی: Space یا ▶ آکورد بعدی، ◀ قبلی.', 4000), 6600);
       });
     } else {
       stopListening(true);
       if (el.practiceBar) el.practiceBar.hidden = true;
-      el.focusLine.classList.remove('show');
+      el.focusLine.classList.toggle('show', scroller.playing);
       updateCurrentChordHighlight();
+      measureSoon();
     }
   }
 
@@ -1094,19 +1114,30 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
   el.themeBtn.addEventListener('click', toggleTheme);
+  // Fullscreen API is missing on iPhone Safari: hide the button there.
+  el.fsBtn.hidden = !document.documentElement.requestFullscreen;
   el.fsBtn.addEventListener('click', () => {
+    if (!document.documentElement.requestFullscreen) return;
     if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
-    else document.exitFullscreen();
+    else document.exitFullscreen().catch(() => {});
   });
   el.moreBtn.addEventListener('click', () => {
-    el.toolbar.classList.toggle('expanded');
+    const open = el.toolbar.classList.toggle('expanded');
+    el.moreBtn.setAttribute('aria-expanded', String(open));
+    measureSoon();
   });
 
-  // Song select
-  el.songSelect.addEventListener('change', () => loadSong(el.songSelect.value));
+  // Song select (blur so Space goes back to the shortcuts)
+  el.songSelect.addEventListener('change', () => {
+    loadSong(el.songSelect.value);
+    el.songSelect.blur();
+  });
 
-  // Detector panel controls
-  det.close.addEventListener('click', () => stopListening(true));
+  // Detector panel controls: closing the panel also leaves practice mode.
+  det.close.addEventListener('click', () => {
+    if (state.practiceMode) setPracticeMode(false);
+    else stopListening(true);
+  });
   det.min.addEventListener('click', () => {
     el.detector.classList.toggle('min');
     el.detector.classList.toggle('minimized');
@@ -1126,6 +1157,11 @@
   det.file.addEventListener('change', () => {
     const f = det.file.files[0];
     if (f) startListening('file', f);
+    det.file.value = ''; // allow choosing the same file again
+  });
+  const fileLabel = det.file.closest('label');
+  if (fileLabel) fileLabel.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); det.file.click(); }
   });
   det.useMic.addEventListener('click', () => startListening('mic'));
 
@@ -1198,6 +1234,7 @@
   if (det.playRecordBtn) {
     det.playRecordBtn.addEventListener('click', () => {
       if (recordedBlob) {
+        setPracticeMode(true, { withMic: false });
         startListening('file', recordedBlob);
       }
     });
@@ -1208,6 +1245,7 @@
     det.testSeqBtn.addEventListener('click', () => {
       const testChords = ['Am', 'C', 'Em', 'D'];
       const wavBlob = AE.generateSyntheticProgression(testChords, { per: 1.6, lead: 0.3 });
+      setPracticeMode(true, { withMic: false });
       resetChordProgress();
       startListening('file', wavBlob);
       toast('در حال اجرای تست توالی Am → C → Em → D');
@@ -1219,6 +1257,7 @@
       const chordEls = Array.from(el.sheet.querySelectorAll('b[data-c]'));
       const targetChord = chordEls[state.progressIdx] ? chordEls[state.progressIdx].dataset.c : 'Em';
       const wavBlob = AE.generateRingingChord(targetChord, 3.2);
+      setPracticeMode(true, { withMic: false });
       startListening('file', wavBlob);
       toast(`در حال پخش آکورد کشیده ${targetChord}`);
     });
@@ -1250,7 +1289,11 @@
       songDelete.hidden = true;
       songDialog._editingId = null;
     }
-    songDialog.showModal();
+    const heading = songDialog.querySelector('h2');
+    if (heading) heading.textContent = songToEdit ? 'ویرایش آهنگ' : 'افزودن آهنگ';
+    const newBtn = $('songNew');
+    if (newBtn) newBtn.hidden = !songToEdit;
+    if (!songDialog.open) songDialog.showModal();
   }
 
   function saveSongFromDialog() {
@@ -1318,11 +1361,15 @@
       body,
     };
     const code = '  ' + JSON.stringify(obj, null, 2).replace(/\n/g, '\n  ') + ',';
+    const fallback = () => {
+      songForm.body.value = code;
+      songForm.body.select();
+      toast('کپی خودکار ممکن نشد؛ متن انتخاب شد، با Ctrl+C کپی کن.');
+    };
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { fallback(); return; }
     navigator.clipboard.writeText(code).then(() => {
       toast('کد در کلیپ‌بورد کپی شد');
-    }).catch(() => {
-      toast('امکان کپی خودکار وجود نداشت');
-    });
+    }).catch(fallback);
   }
 
   function deleteCurrentSong() {
@@ -1339,7 +1386,9 @@
   if (songCopy) songCopy.addEventListener('click', copySongLibraryFormat);
   if (songDelete) songDelete.addEventListener('click', deleteCurrentSong);
   if (songCancel) songCancel.addEventListener('click', () => songDialog.close());
-  el.addSongBtn.addEventListener('click', () => openSongDialog(null));
+  el.addSongBtn.addEventListener('click', () => openSongDialog(state.song && state.song.user ? state.song : null));
+  const songNewBtn = $('songNew');
+  if (songNewBtn) songNewBtn.addEventListener('click', () => openSongDialog(null));
 
   // ------------------------------------------------------------- init
 
@@ -1352,7 +1401,7 @@
     // Detector defaults
     det.unrestricted.checked = settings.unrestricted === true;
     updateVocabulary();
-    det.sens.value = settings.sensitivity || 55;
+    det.sens.value = typeof settings.sensitivity === 'number' ? settings.sensitivity : 55;
     const initialStrictness = settings.strictness || 'strict';
     follower.setStrictness(initialStrictness);
     const radio = document.querySelector(`input[name="strictness"][value="${initialStrictness}"]`);
@@ -1361,57 +1410,69 @@
     populateSongSelect();
     const fromHash = songIdFromHash();
     loadSong(fromHash || settings.songId || (allSongs()[0] && allSongs()[0].id), { keepHash: !!fromHash });
-    // Keyboard
+    // Keyboard. Physical keys (ev.code), so shortcuts also work with a
+    // Persian layout; browser shortcuts (Ctrl/Cmd/Alt + key) are left alone.
     document.addEventListener('keydown', (ev) => {
-      if (ev.target.matches('input, textarea, select')) return;
-      if (ev.key === ' ') {
-        ev.preventDefault();
-        if (state.practiceMode) advanceChord(1);
-        else scroller.toggle();
-      }
-      else if (ev.key === 'ArrowRight' && state.practiceMode) {
-        ev.preventDefault();
-        advanceChord(1);
-      }
-      else if (ev.key === 'ArrowLeft' && state.practiceMode) {
-        ev.preventDefault();
-        advanceChord(-1);
-      }
-      else if (ev.key === 'r' || ev.key === 'R') {
-        if (state.practiceMode) {
-          resetChordProgress();
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        } else {
-          scroller.restart();
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      const t = ev.target || {};
+      const tag = t.tagName;
+      if ((tag === 'INPUT' && t.type !== 'range') || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
+      if (songDialog && songDialog.open) return;
+      // A keyboard-focused button keeps its own Space/Enter action.
+      if ((tag === 'BUTTON' || tag === 'SUMMARY') && (ev.code === 'Space' || ev.code === 'Enter')) return;
+      switch (ev.code) {
+        case 'Space':
+          ev.preventDefault();
+          if (state.practiceMode) advanceChord(1);
+          else scroller.toggle();
+          break;
+        case 'ArrowRight':
+          if (state.practiceMode) { ev.preventDefault(); advanceChord(1); }
+          break;
+        case 'ArrowLeft':
+          if (state.practiceMode) { ev.preventDefault(); advanceChord(-1); }
+          break;
+        case 'ArrowUp':
+        case 'ArrowDown':
+          // Only while the timer scroll runs; otherwise arrows scroll the page.
+          if (scroller.playing) {
+            ev.preventDefault();
+            const d = ev.code === 'ArrowUp' ? 5 : -5;
+            el.speed.value = clamp(+el.speed.value + d, 0, 100);
+            el.speed.dispatchEvent(new Event('input'));
+          }
+          break;
+        case 'KeyR':
+          if (state.practiceMode) {
+            resetChordProgress();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          } else {
+            scroller.restart();
+          }
+          break;
+        case 'BracketLeft': setTranspose(state.transpose - 1); break;
+        case 'BracketRight': setTranspose(state.transpose + 1); break;
+        case 'Digit0': case 'Numpad0': setTranspose(0); break;
+        case 'Equal': case 'NumpadAdd': setZoom(settings.zoom + 0.1); break;
+        case 'Minus': case 'NumpadSubtract': setZoom(settings.zoom - 0.1); break;
+        case 'KeyM': toggleMetronome(); break;
+        case 'KeyT': {
+          const bpm = tapper.tap();
+          if (bpm) setBpm(bpm);
+          break;
         }
+        case 'KeyL': el.micBtn.click(); break;
+        case 'KeyD': toggleTheme(); break;
+        case 'KeyF': el.fsBtn.click(); break;
+        case 'Escape': hidePop(); break;
+        default: break;
       }
-      else if (ev.key === 'ArrowUp') {
-        ev.preventDefault();
-        el.speed.value = Math.min(100, +el.speed.value + 5);
-        el.speed.dispatchEvent(new Event('input'));
-      }
-      else if (ev.key === 'ArrowDown') {
-        ev.preventDefault();
-        el.speed.value = Math.max(0, +el.speed.value - 5);
-        el.speed.dispatchEvent(new Event('input'));
-      }
-      else if (ev.key === '[') setTranspose(state.transpose - 1);
-      else if (ev.key === ']') setTranspose(state.transpose + 1);
-      else if (ev.key === '0') setTranspose(0);
-      else if (ev.key === '+' || ev.key === '=') setZoom(settings.zoom + 0.1);
-      else if (ev.key === '-' || ev.key === '_') setZoom(settings.zoom - 0.1);
-      else if (ev.key === 'm' || ev.key === 'M') toggleMetronome();
-      else if (ev.key === 't' || ev.key === 'T') {
-        const bpm = tapper.tap();
-        if (bpm) setBpm(bpm);
-      }
-      else if (ev.key === 'l' || ev.key === 'L') el.micBtn.click();
-      else if (ev.key === 'd' || ev.key === 'D') toggleTheme();
-      else if (ev.key === 'f' || ev.key === 'F') el.fsBtn.click();
-      else if (ev.key === 'Escape') {
-        hidePop();
-        if (songDialog && songDialog.open) songDialog.close();
-      }
+    });
+    // Mouse/touch clicks should not leave focus on a button, or the next
+    // Space would press that button instead of the shortcut.
+    document.addEventListener('pointerup', (ev) => {
+      const b = ev.target.closest && ev.target.closest('button');
+      if (b && !b.closest('dialog')) setTimeout(() => b.blur(), 0);
     });
     window.addEventListener('hashchange', () => {
       const id = songIdFromHash();

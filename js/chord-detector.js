@@ -1089,7 +1089,12 @@
         // 3. Target chord was either top rank or within allowed margin of best
         const scorePass = avgTargetScore >= cfg.minScore;
         const holdPass = targetHoldRatio >= cfg.minHoldRatio || topRankRatio >= 0.6;
-        const rivalPass = isSameAsDominant || (avgBestScore - avgTargetScore <= (cfg.margin ? 0.10 : 0.15));
+        // How far the target may trail the best-scoring chord. Derived from
+        // cfg.margin so that looser settings always tolerate more:
+        // strict 0.06, normal 0.10, loose 0.18. (The previous truthiness test
+        // made 'loose' (margin -0.08) stricter than 'normal' (margin 0).)
+        const rivalTolerance = 0.10 - cfg.margin;
+        const rivalPass = isSameAsDominant || (avgBestScore - avgTargetScore <= rivalTolerance);
 
         const accepted = scorePass && holdPass && rivalPass;
 
@@ -1129,7 +1134,7 @@
           let reason = '';
           if (!scorePass) {
             reason = `✗ اطمینان پایین: امتیاز ${Math.round(avgTargetScore * 100)}٪ کمتر از آستانه ${Math.round(cfg.minScore * 100)}٪`;
-          } else if (dominantChord && !isSameAsDominant && (avgBestScore - avgTargetScore > 0.12)) {
+          } else if (dominantChord && !isSameAsDominant && (avgBestScore - avgTargetScore > rivalTolerance)) {
             reason = `✗ آکورد اشتباه: صدای ${dominantChord} شنیده شد (${Math.round(avgBestScore * 100)}٪)، آکورد هدف ${this.target} بود (${Math.round(avgTargetScore * 100)}٪)`;
           } else if (!holdPass) {
             reason = `✗ پایداری کم: آکورد فقط در ${Math.round(targetHoldRatio * 100)}٪ فریم‌ها پایدار بود (حداقل ${Math.round(cfg.minHoldRatio * 100)}٪)`;

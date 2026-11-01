@@ -92,9 +92,9 @@ this browser). Use **کپی ورودی کتابخانه** to copy a ready-made e
 
 | Key | Action |
 | --- | --- |
-| `Space` | start / stop auto-scroll |
-| `R` | back to the top |
-| `↑` / `↓` | faster / slower (while scrolling) |
+| `Space` | start / stop auto-scroll · in practice mode: next chord |
+| `R` | back to the top (practice mode: first chord) |
+| `↑` / `↓` | faster / slower while the timer scroll runs (otherwise they scroll the page) |
 | `[` / `]` | transpose down / up |
 | `+` / `−` | zoom |
 | `M` | metronome · `T` tap tempo |
@@ -102,7 +102,7 @@ this browser). Use **کپی ورودی کتابخانه** to copy a ready-made e
 | `←` / `→` | previous / next chord (practice mode) |
 | `D` | dark mode · `F` fullscreen |
 
-Shortcuts use physical key positions, so they also work with a Persian keyboard layout.
+Shortcuts use physical key positions, so they also work with a Persian keyboard layout. Browser shortcuts (Ctrl/Cmd/Alt + key) are never intercepted.
 
 ## How chord detection works
 

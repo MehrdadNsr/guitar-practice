@@ -177,6 +177,59 @@ async function alignment(page) {
     check('tolerance window is marked on the next chords', win > 0, `${win} chords`);
     await page.click('#micBtn');
 
+    // --- Regression checks from the bug-hunt pass ---
+    // Song text is escaped (it used to be injected as HTML).
+    await page.evaluate(() => localStorage.setItem('gp:userSongs', JSON.stringify([{
+      id: 'xss', title: 'X<i>t</i>', body: '[Am]a < b & c [C]<img src=x onerror="window.__xss=1">',
+    }])));
+    await page.goto(url + '#song=xss');
+    await page.reload(); // a hash-only navigation does not reload the page
+    await page.waitForTimeout(500);
+    const xss = await page.evaluate(() => ({ fired: window.__xss === 1, tag: !!document.querySelector('#songTitle i, #sheet img'), text: document.getElementById('sheet').textContent }));
+    check('song text is escaped, not injected as HTML', !xss.fired && !xss.tag && xss.text.includes('a < b & c'), JSON.stringify(xss));
+    await page.evaluate(() => localStorage.removeItem('gp:userSongs'));
+    await page.goto(url + '#song=haunted');
+    await page.reload();
+    await page.waitForTimeout(500);
+
+    // Practice mode: done/current chords keep their alignment; transposing keeps progress.
+    await page.evaluate(() => { GP.app.state.practiceMode = false; });
+    await page.click('#micBtn');
+    await page.waitForTimeout(400);
+    for (let i = 0; i < 5; i++) await page.click('#pNextBtn');
+    const progBefore = await page.evaluate(() => GP.app.state.progressIdx);
+    const pa = await page.$$eval('.cd b.done, .cd b.current-chord', (bs) => bs.map((b) => {
+      const ly = b.closest('.ck').querySelector('.ly'); // chord-only lines have no lyric
+      const tn = ly && ly.firstChild;
+      if (!tn || !tn.textContent.length) return 0;
+      const r = document.createRange(); r.setStart(tn, 0); r.setEnd(tn, 1);
+      const st = getComputedStyle(b);
+      const textLeft = b.getBoundingClientRect().left + parseFloat(st.paddingLeft) * (b.classList.contains('current-chord') ? 1.18 : 1);
+      return Math.abs(textLeft - r.getBoundingClientRect().left);
+    }));
+    check('practice marks keep chords over their words', pa.length > 0 && Math.max(...pa) < 3, pa.map((x) => x.toFixed(1)).join(','));
+    await page.click('#transUp');
+    const progAfter = await page.evaluate(() => GP.app.state.progressIdx);
+    check('transposing during practice keeps the position', progBefore === progAfter && progAfter === 5, `${progBefore} -> ${progAfter}`);
+    await page.click('#keyOut');
+    await page.click('#detClose');
+    check('closing the detector leaves practice mode', !(await page.evaluate(() => GP.app.state.practiceMode)) && (await page.isHidden('#practiceBar')));
+    const doneOutside = await page.$$eval('.cd b.done', (n) => n.length);
+    check('no practice marks outside practice mode', doneOutside === 0, String(doneOutside));
+
+    // Dialog: a saved song can be reopened from ＋ for editing and deleted.
+    await page.click('#addSongBtn');
+    await page.fill('input[name=title]', 'Enter test');
+    await page.fill('textarea[name=body]', '[G]one [D]two');
+    await page.click('#songSave');
+    await page.waitForTimeout(300);
+    check('a new song is saved and shown', (await page.textContent('#songTitle')).includes('Enter test'));
+    await page.click('#addSongBtn');
+    page.once('dialog', (d) => d.accept());
+    await page.click('#songDelete');
+    await page.waitForTimeout(300);
+    check('a saved song can be edited/deleted from ＋', !(await page.textContent('#songTitle')).includes('Enter test'));
+
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
     phone.on('pageerror', (e) => errors.push(e.message));
     await phone.goto(url + '#song=haunted');

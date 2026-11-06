@@ -8,7 +8,7 @@
  * Never put a secret / service-role key here.
  */
 const SUPABASE_URL = 'https://qljpeyeeppnqlsrtexky.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = 'PASTE_HERE';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_jSMPK6TFJHxu6mB7YA42CQ_VfaexX_A';
 const SUPABASE_VOICE_TABLE = 'voice_live';
 
 (function (global) {

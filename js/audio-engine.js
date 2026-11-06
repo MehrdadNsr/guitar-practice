@@ -127,6 +127,38 @@
     }
   }
 
+  // ----------------------------------------------------------- raw mic
+
+  /**
+   * Opens the microphone as a raw signal: echo cancellation, noise
+   * suppression and AGC all distort a guitar's spectrum (and a voice's
+   * loudness contour), so all three are off (guitar-chord-trainer does the
+   * same). Resolves to a MediaStream; throws an Error with .code on failure:
+   * 'insecure' | 'unsupported' | 'denied' | 'notfound' | 'busy' | 'unknown'.
+   */
+  async function openRawMic() {
+    if (!global.isSecureContext) throw Object.assign(new Error('insecure context'), { code: 'insecure' });
+    const md = global.navigator && global.navigator.mediaDevices;
+    if (!md || !md.getUserMedia) throw Object.assign(new Error('getUserMedia missing'), { code: 'unsupported' });
+    try {
+      return await md.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+    } catch (err) {
+      const name = err && err.name;
+      const code = name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError'
+        ? 'denied'
+        : name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError'
+          ? 'notfound'
+          : name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError'
+            ? 'busy'
+            : name === 'NotSupportedError' || name === 'TypeError'
+              ? 'unsupported'
+              : 'unknown';
+      throw Object.assign(new Error(err && err.message ? err.message : String(err)), { code });
+    }
+  }
+
   // ------------------------------------------------------ chord listener
 
   /**
@@ -154,26 +186,7 @@
       const md = global.navigator && global.navigator.mediaDevices;
       if (!md || !md.getUserMedia) throw Object.assign(new Error('getUserMedia missing'), { code: 'unsupported' });
       const c = await getContext();
-      let stream;
-      try {
-        // Raw signal: echo cancellation, noise suppression and AGC all
-        // distort a guitar's spectrum (guitar-chord-trainer does the same).
-        stream = await md.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-        });
-      } catch (err) {
-        const name = err && err.name;
-        const code = name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError'
-          ? 'denied'
-          : name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError'
-            ? 'notfound'
-            : name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError'
-              ? 'busy'
-              : name === 'NotSupportedError' || name === 'TypeError'
-                ? 'unsupported'
-                : 'unknown';
-        throw Object.assign(new Error(err && err.message ? err.message : String(err)), { code });
-      }
+      const stream = await openRawMic();
       this.stop();
       this.stream = stream;
       this.source = c.createMediaStreamSource(stream);
@@ -476,6 +489,7 @@
 
   GP.Audio = {
     getContext,
+    openRawMic,
     Metronome,
     TapTempo,
     ChordListener,

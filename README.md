@@ -173,8 +173,12 @@ js/music-theory.js    note names, chord parsing, transposition, key spelling
 js/song-parser.js     ChordPro / chords-over-lyrics → line model + word layout
 js/chord-shapes.js    fingerings (open shapes + movable E/A barre shapes) and SVG diagrams
 js/chord-detector.js  DSP + recognition + stability voting (pure, testable)
-js/audio-engine.js    AudioContext, look-ahead metronome, tap tempo, mic/file listener
+js/audio-engine.js    AudioContext, raw mic, look-ahead metronome, tap tempo, mic/file listener
 js/app.js             UI controller (rendering, auto-scroll, highlight, panels, dialog)
+voice.html            Voice mode page (live prosody of speech, Persian UI)
+js/voice-engine.js    speech pitch / loudness / syllable onsets / sentence summaries (pure, testable)
+js/voice-app.js       Voice mode UI + Supabase sender with retry queue
+js/config.js          public config: Supabase URL + publishable key placeholder
 songs/library.js      the song library — one entry per song
 tests/*.test.js       unit + synthetic-audio tests (node --test, zero dependencies)
 tests/browser-e2e.js  optional Chromium end-to-end check (needs Playwright)
@@ -185,10 +189,25 @@ All scripts are classic `<script>` files sharing a `window.GP` namespace (each a
 via `module.exports` for Node). ES modules would break when opening `index.html` from disk
 (`file://` blocks module loading in Chrome).
 
+## Voice mode (`voice.html`)
+
+Listens to a speaking voice on the laptop microphone (raw signal, no echo
+cancellation / noise suppression / AGC) and, every 20 ms, measures raw YIN pitch
+(60–500 Hz, no note snapping, no smoothing), voicing, RMS loudness and syllable
+onsets. A sentence ends after 600 ms below the learned noise floor; segments
+under 250 ms are dropped. Each sentence becomes one summary row (pitch median /
+p10 / p90, end trend, loudness mean / peak, syllable rate, voiced ratio, a
+100 ms contour) that is POSTed to the Supabase table `voice_live` with
+`Prefer: return=minimal` (the table is INSERT-only for anon). The «صدای عادی
+من» button records 60 s and sends one `kind = 'baseline'` row.
+
+Paste the project's **publishable** key into `js/config.js`
+(`SUPABASE_PUBLISHABLE_KEY`). Never put a service-role key there.
+
 ## Tests
 
 ```bash
-node --test                  # Node 18+; ~3 s; no npm install
+node --test                  # Node 18+; ~4 s; no npm install
 node tests/browser-e2e.js    # optional; needs Playwright + Chromium installed
 ```
 

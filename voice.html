@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f7f3ea" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141414" media="(prefers-color-scheme: dark)">
+<title>حالت صدا — Voice mode</title>
+<link rel="stylesheet" href="css/style.css">
+<script>
+  // Apply the saved theme before first paint (shared with the chord page).
+  (function () {
+    try {
+      var s = JSON.parse(localStorage.getItem('gp:settings') || '{}');
+      var t = s.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) { document.documentElement.setAttribute('data-theme', 'light'); }
+  })();
+</script>
+</head>
+<body class="voice-body">
+<header class="appbar voice-appbar">
+  <div class="appbar-row">
+    <div class="brand" aria-hidden="true">🗣</div>
+    <h1 class="voice-title">حالت صدا</h1>
+    <div class="appbar-actions">
+      <button type="button" id="themeBtn" class="icon-btn" title="حالت تاریک / روشن" aria-label="حالت تاریک / روشن">🌙</button>
+      <a href="index.html" class="icon-btn link-btn" title="بازگشت به تمرین گیتار">🎸</a>
+    </div>
+  </div>
+</header>
+
+<main class="voice-main">
+  <section class="voice-card voice-control">
+    <button type="button" id="voiceStartBtn" class="voice-start" aria-pressed="false">
+      <span class="ico">🎤</span><span class="lbl">شروع شنیدن</span>
+    </button>
+    <div class="voice-status" id="voiceStatus" role="status" aria-live="polite">آماده. دکمه را بزن تا میکروفون باز شود.</div>
+    <div class="voice-config-warn" id="voiceConfigWarn" hidden>
+      کلید Supabase هنوز تنظیم نشده (<code dir="ltr">js/config.js</code>). جمله‌ها تحلیل می‌شوند ولی فرستاده نمی‌شوند.
+    </div>
+  </section>
+
+  <section class="voice-card voice-live" aria-label="نمایش زنده">
+    <div class="voice-live-head">
+      <span class="voice-live-label">زیر و بمی</span>
+      <span class="voice-live-value mono" id="voiceHz" dir="ltr">—</span>
+      <span class="voice-live-flag" id="voiceVoiced"></span>
+    </div>
+    <canvas id="voicePitchCanvas" class="voice-pitch" width="800" height="200" dir="ltr" aria-label="خط زندهٔ زیر و بمی"></canvas>
+    <div class="voice-live-head">
+      <span class="voice-live-label">بلندی</span>
+      <span class="voice-live-value mono" id="voiceDb" dir="ltr">—</span>
+      <span class="voice-live-flag" id="voiceSpeaking"></span>
+    </div>
+    <div class="level voice-level" dir="ltr">
+      <div class="level-fill" id="voiceLevelFill"></div>
+      <div class="level-gate" id="voiceLevelGate"></div>
+    </div>
+  </section>
+
+  <section class="voice-card" aria-label="جمله‌های اخیر">
+    <div class="voice-list-head">
+      <h2>جمله‌های اخیر</h2>
+      <span class="voice-queue mono" id="voiceQueue" dir="ltr"></span>
+    </div>
+    <ol class="voice-list" id="voiceList" reversed></ol>
+    <p class="hint voice-empty" id="voiceEmpty">هنوز جمله‌ای شنیده نشده. حرف بزن؛ هر جمله بعد از حدود نیم ثانیه مکث بسته می‌شود.</p>
+  </section>
+
+  <section class="voice-card voice-calib" aria-label="کالیبراسیون">
+    <div class="voice-calib-row">
+      <button type="button" id="voiceCalibBtn"><span class="ico">🎚</span><span class="lbl">صدای عادی من</span></button>
+      <span class="voice-calib-status" id="voiceCalibStatus">۶۰ ثانیه با لحن عادی حرف بزن تا یک ردیف «baseline» ثبت شود.</span>
+    </div>
+    <div class="meter voice-calib-meter" dir="ltr"><div class="meter-fill" id="voiceCalibFill"></div></div>
+    <p class="hint" id="voiceBaselineInfo"></p>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="js/config.js"></script>
+<script src="js/music-theory.js"></script>
+<script src="js/chord-detector.js"></script>
+<script src="js/audio-engine.js"></script>
+<script src="js/voice-engine.js"></script>
+<script src="js/voice-app.js"></script>
+</body>
+</html>

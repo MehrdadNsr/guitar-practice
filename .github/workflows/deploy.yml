@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           rm -rf _site
           mkdir _site
-          cp index.html _site/
+          cp index.html voice.html _site/
           cp -R css js songs _site/
           find _site -type f | sort
       - name: Upload artifact

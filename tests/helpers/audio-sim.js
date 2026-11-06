@@ -264,6 +264,53 @@ function runTracker(tracker, signal, sr, opts) {
   return out;
 }
 
+/**
+ * Runs a VoiceTracker over a whole signal at `hopMs` steps, feeding the same
+ * kind of frames the browser builds: full-band time samples, a low-passed
+ * copy for YIN and AnalyserNode dB bins for spectral flux.
+ * Returns [{ t, result }].
+ */
+function runVoiceTracker(tracker, signal, sr, opts) {
+  const o = Object.assign({ fftSize: 2048, hopMs: 20, lowCutoff: 800, wall0: 1700000000000 }, opts || {});
+  const low = lowpass(signal, sr, o.lowCutoff, 0.707);
+  const hop = Math.round((o.hopMs / 1000) * sr);
+  const out = [];
+  for (let end = hop; end <= signal.length; end += hop) {
+    const time = new Float32Array(o.fftSize);
+    const lowTime = new Float32Array(o.fftSize);
+    for (let i = 0; i < o.fftSize; i++) {
+      const idx = end - o.fftSize + i;
+      if (idx >= 0) { time[i] = signal[idx]; lowTime[i] = low[idx]; }
+    }
+    const db = analyserFrame(signal, end, o.fftSize);
+    const t = (end / sr) * 1000;
+    out.push({ t, result: tracker.process({ time, lowTime, db, fftSize: o.fftSize, sampleRate: sr, t, wall: o.wall0 + t }) });
+  }
+  return out;
+}
+
+/**
+ * A voice-like tone: a pulse-ish harmonic series whose fundamental follows
+ * `hzAt(seconds)`, added into `out` from `start` for `seconds`, with short
+ * fades so onsets are clean.
+ */
+function addVoice(out, sr, start, seconds, hzAt, amp, opts) {
+  const o = Object.assign({ harmonics: 8, fadeMs: 15 }, opts || {});
+  const n0 = Math.floor(start * sr);
+  const len = Math.min(out.length - n0, Math.floor(seconds * sr));
+  const fade = Math.floor((o.fadeMs / 1000) * sr);
+  let phase = 0;
+  for (let i = 0; i < len; i++) {
+    const sec = i / sr;
+    const f = hzAt(sec);
+    phase += (2 * Math.PI * f) / sr;
+    let v = 0;
+    for (let h = 1; h <= o.harmonics; h++) v += Math.sin(h * phase) / h;
+    const g = Math.min(1, i / fade, (len - i) / fade);
+    out[n0 + i] += amp * g * v;
+  }
+}
+
 function writeWav(samples, sr) {
   const n = samples.length;
   const buf = Buffer.alloc(44 + n * 2);
@@ -299,5 +346,7 @@ module.exports = {
   analyserFrame,
   lowpass,
   runTracker,
+  runVoiceTracker,
+  addVoice,
   writeWav,
 };

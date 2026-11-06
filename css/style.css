@@ -738,3 +738,38 @@ kbd {
 .det-chord.unknown { font-size: 1.5rem; color: var(--muted); }
 /* Chord-synced scroll: chords inside the tolerance window (accepted early). */
 .cd b.window { text-decoration: underline dotted var(--accent-2); text-underline-offset: 3px; }
+
+/* ------------------------------------------------------------ voice mode */
+.link-btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: inherit; border: 1px solid var(--line); background: var(--paper); border-radius: 9px; min-height: 34px; box-sizing: border-box; }
+.link-btn:hover { border-color: var(--accent); }
+.voice-title { font-size: 1.05rem; margin: 0; flex: 1; font-weight: 700; }
+.voice-appbar { --appbar-h: 56px; }
+.voice-main { max-width: 760px; margin: 0 auto; padding: 16px max(14px, env(safe-area-inset-right)) 40px max(14px, env(safe-area-inset-left)); display: grid; gap: 14px; }
+.voice-card { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; }
+.voice-control { text-align: center; }
+.voice-start { font-size: 1.25rem; padding: 18px 32px; min-width: 240px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+.voice-start .ico { margin-inline-end: 8px; }
+.voice-start.on { background: var(--danger); border-color: var(--danger); color: #fff; }
+.voice-status { margin-top: 10px; color: var(--muted); font-size: 0.9rem; }
+.voice-config-warn { margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: var(--hl); border: 1px solid var(--hl-edge); font-size: 0.85rem; }
+.voice-live-head { display: flex; align-items: baseline; gap: 10px; margin: 4px 0; }
+.voice-live-label { font-weight: 700; font-size: 0.85rem; }
+.voice-live-value { font-size: 1.1rem; min-width: 6ch; }
+.voice-live-flag { color: var(--muted); font-size: 0.78rem; }
+.voice-pitch { display: block; width: 100%; height: 180px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); margin-bottom: 10px; }
+.voice-level { height: 10px; margin-top: 4px; }
+.voice-list-head { display: flex; align-items: baseline; gap: 10px; }
+.voice-list-head h2 { font-size: 0.95rem; margin: 0 0 6px; flex: 1; }
+.voice-queue { color: var(--muted); font-size: 0.78rem; }
+.voice-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.voice-row { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: var(--bg); display: grid; gap: 2px; }
+.voice-row-baseline { border-color: var(--accent-2); }
+.voice-row-text { font-size: 0.95rem; }
+.voice-row-meta { font-size: 0.72rem; color: var(--muted); text-align: left; }
+.voice-send { font-size: 0.74rem; color: var(--muted); }
+.voice-send-sent { color: var(--match); }
+.voice-send-retry, .voice-send-noconfig { color: var(--danger); }
+.voice-calib-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.voice-calib-row .ico { margin-inline-end: 6px; }
+.voice-calib-status { color: var(--muted); font-size: 0.85rem; flex: 1; }
+.voice-calib-meter { margin-top: 10px; }
